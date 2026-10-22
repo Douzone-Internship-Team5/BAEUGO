@@ -1,8 +1,10 @@
-from datetime import datetime, timezone
+from datetime import UTC, datetime
+
 from fastapi.testclient import TestClient
 from sqlalchemy.orm import Session
 
 from app.models.course import Course
+from tests.conftest import auth_header
 
 
 def test_course_search_all_cases(client: TestClient, db_session: Session):
@@ -15,7 +17,7 @@ def test_course_search_all_cases(client: TestClient, db_session: Session):
         difficulty="BEGINNER",
         price_krw=0,
         status="PUBLISHED",
-        published_at=datetime.now(timezone.utc),
+        published_at=datetime.now(UTC),
     )
     c_paid = Course(
         instructor_id=6,
@@ -26,7 +28,7 @@ def test_course_search_all_cases(client: TestClient, db_session: Session):
         difficulty="ADVANCED",
         price_krw=45000,
         status="PUBLISHED",
-        published_at=datetime.now(timezone.utc),
+        published_at=datetime.now(UTC),
     )
     db_session.add_all([c_free, c_paid])
     db_session.commit()
@@ -72,7 +74,7 @@ def test_course_search_all_cases(client: TestClient, db_session: Session):
     # [성공 5] 개인화 추천 정렬 (sort=recommended, 로그인 필수)
     res_rec = client.get(
         "/api/v1/courses?sort=recommended",
-        headers={"Authorization": "Bearer user_2"},
+        headers=auth_header(2),
     )
     assert res_rec.status_code == 200
     assert "items" in res_rec.json()["data"]

@@ -62,7 +62,11 @@ def save_upload_file(file: UploadFile, relative_dir: str, filename_prefix: str =
     if not ext:
         ext = ".bin"
 
-    unique_name = f"{filename_prefix}_{uuid4().hex[:8]}{ext}" if filename_prefix else f"{uuid4().hex[:8]}{ext}"
+    unique_name = (
+        f"{filename_prefix}_{uuid4().hex[:8]}{ext}"
+        if filename_prefix
+        else f"{uuid4().hex[:8]}{ext}"
+    )
     target_file = target_dir / unique_name
 
     file.file.seek(0)
@@ -76,7 +80,11 @@ def save_upload_file(file: UploadFile, relative_dir: str, filename_prefix: str =
 def get_thumbnail_url(storage_key: str | None) -> str | None:
     if not storage_key:
         return None
-    if storage_key.startswith("http://") or storage_key.startswith("https://") or storage_key.startswith("/"):
+    if (
+        storage_key.startswith("http://")
+        or storage_key.startswith("https://")
+        or storage_key.startswith("/")
+    ):
         return storage_key
     return f"/api/v1/media/{storage_key.lstrip('/')}"
 
@@ -90,6 +98,10 @@ def get_video_stream_url(video_id: int | None) -> str | None:
 def get_profile_image_url(profile_image_key: str | None) -> str | None:
     if not profile_image_key:
         return None
-    if profile_image_key.startswith("http://") or profile_image_key.startswith("https://") or profile_image_key.startswith("/"):
+    if (
+        profile_image_key.startswith("http://")
+        or profile_image_key.startswith("https://")
+        or profile_image_key.startswith("/")
+    ):
         return profile_image_key
     return f"/api/v1/media/{profile_image_key.lstrip('/')}"

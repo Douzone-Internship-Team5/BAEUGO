@@ -60,6 +60,7 @@ TOPIC_NAMES = {
 class SeedAccount:
     email: str
     name: str
+    id: int | None = None
     account_type: AccountType = AccountType.MEMBER
     roles: list[Role] = field(default_factory=list)
     learner_profile: dict | None = None
@@ -70,8 +71,9 @@ class SeedAccount:
 
 SEED_ACCOUNTS = [
     # 역할 선택·온보딩 시연용
-    SeedAccount(email="learner1@baeugo.test", name="최새봄"),
+    SeedAccount(id=3, email="learner1@baeugo.test", name="최새봄"),
     SeedAccount(
+        id=2,
         email="learner2@baeugo.test",
         name="김배우",
         roles=[Role.LEARNER],
@@ -83,6 +85,7 @@ SEED_ACCOUNTS = [
         learner_topic_ids=[11],
     ),
     SeedAccount(
+        id=6,
         email="instructor1@baeugo.test",
         name="이하늘",
         roles=[Role.INSTRUCTOR],
@@ -94,6 +97,7 @@ SEED_ACCOUNTS = [
         instructor_topic_ids=[61],
     ),
     SeedAccount(
+        id=4,
         email="instructor2@baeugo.test",
         name="정다온",
         roles=[Role.INSTRUCTOR],
@@ -103,7 +107,7 @@ SEED_ACCOUNTS = [
         },
         instructor_topic_ids=[41, 42],
     ),
-    SeedAccount(email="admin@baeugo.test", name="운영자", account_type=AccountType.OPERATOR),
+    SeedAccount(id=1, email="admin@baeugo.test", name="운영자", account_type=AccountType.OPERATOR),
 ]
 
 
@@ -164,6 +168,7 @@ def seed_accounts(db: Session) -> None:
 def add_account(db: Session, account: SeedAccount) -> None:
     active_mode = account.roles[0] if account.roles else None
     user = User(
+        id=account.id,
         email=account.email,
         password_hash=hash_password(SEED_PASSWORD),
         name=account.name,
@@ -193,6 +198,7 @@ def seed(db: Session) -> None:
     seed_categories(db)
     seed_topics(db)
     seed_accounts(db)
+    reset_id_sequence(db, User.__tablename__)
     db.commit()
 
 

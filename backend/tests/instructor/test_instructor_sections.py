@@ -1,8 +1,9 @@
-from datetime import datetime, timezone
+from datetime import UTC, datetime
+
 from fastapi.testclient import TestClient
 from sqlalchemy.orm import Session
 
-from app.models.course import Course, Section, Video
+from app.models.course import Course, Section
 
 
 def test_b5_sections_all_cases(client: TestClient, db_session: Session):
@@ -80,7 +81,7 @@ def test_b5_sections_all_cases(client: TestClient, db_session: Session):
         difficulty="BEGINNER",
         price_krw=0,
         status="PUBLISHED",
-        published_at=datetime.now(timezone.utc),
+        published_at=datetime.now(UTC),
     )
     db_session.add(pub_course)
     db_session.flush()

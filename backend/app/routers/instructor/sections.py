@@ -35,7 +35,9 @@ def create_section(
 ):
     course = verify_course_ownership(req.course_id, current_user.id, db)
     if course.status not in ("DRAFT", "EDITING"):
-        raise AppError(409, "CONFLICT", "DRAFT 또는 EDITING 상태인 강좌에서만 섹션을 편집할 수 있습니다.")
+        raise AppError(
+            409, "CONFLICT", "DRAFT 또는 EDITING 상태인 강좌에서만 섹션을 편집할 수 있습니다."
+        )
 
     if not req.title or not req.title.strip() or len(req.title) > 150:
         raise AppError(400, "VALIDATION_ERROR", "섹션 제목은 1~150자 이내로 입력해 주세요.")
@@ -77,7 +79,9 @@ def update_section(
     section = verify_section_ownership(sectionId, current_user.id, db)
     course = section.course
     if course.status not in ("DRAFT", "EDITING"):
-        raise AppError(409, "CONFLICT", "DRAFT 또는 EDITING 상태인 강좌에서만 섹션을 편집할 수 있습니다.")
+        raise AppError(
+            409, "CONFLICT", "DRAFT 또는 EDITING 상태인 강좌에서만 섹션을 편집할 수 있습니다."
+        )
 
     if req.title is not None:
         if not req.title.strip() or len(req.title) > 150:
@@ -85,7 +89,9 @@ def update_section(
         section.title = req.title
     if req.sort_order is not None:
         if req.sort_order < 1:
-            raise AppError(400, "VALIDATION_ERROR", "섹션 정렬 순서(sortOrder)는 1 이상이어야 합니다.")
+            raise AppError(
+                400, "VALIDATION_ERROR", "섹션 정렬 순서(sortOrder)는 1 이상이어야 합니다."
+            )
         section.sort_order = req.sort_order
 
     db.commit()
@@ -111,7 +117,9 @@ def delete_section(
     section = verify_section_ownership(sectionId, current_user.id, db)
     course = section.course
     if course.status not in ("DRAFT", "EDITING"):
-        raise AppError(409, "CONFLICT", "DRAFT 또는 EDITING 상태인 강좌에서만 섹션을 편집할 수 있습니다.")
+        raise AppError(
+            409, "CONFLICT", "DRAFT 또는 EDITING 상태인 강좌에서만 섹션을 편집할 수 있습니다."
+        )
 
     # 물리 삭제 금지: is_active = False 처리 (하위 영상 및 퀴즈도 비활성화)
     section.is_active = False

@@ -1,8 +1,10 @@
-from datetime import datetime, timezone
+from datetime import UTC, datetime
+
 from fastapi.testclient import TestClient
 from sqlalchemy.orm import Session
 
 from app.models.course import Course, Video
+from tests.conftest import auth_header
 
 
 def test_feed_ot_all_cases(client: TestClient, db_session: Session):
@@ -15,7 +17,7 @@ def test_feed_ot_all_cases(client: TestClient, db_session: Session):
         difficulty="BEGINNER",
         price_krw=0,
         status="PUBLISHED",
-        published_at=datetime.now(timezone.utc),
+        published_at=datetime.now(UTC),
     )
     db_session.add(course)
     db_session.flush()
@@ -37,7 +39,7 @@ def test_feed_ot_all_cases(client: TestClient, db_session: Session):
     # [성공 1] 정상 로그인 헤더 전달 시 OT 목록 및 커서 페이징 반환
     res = client.get(
         "/api/v1/feed/ot?size=5",
-        headers={"Authorization": "Bearer valid_token"},
+        headers=auth_header(2),
     )
     assert res.status_code == 200
     data = res.json()["data"]
@@ -50,7 +52,7 @@ def test_feed_ot_all_cases(client: TestClient, db_session: Session):
     if next_cursor:
         res_page2 = client.get(
             f"/api/v1/feed/ot?size=5&cursor={next_cursor}",
-            headers={"Authorization": "Bearer valid_token"},
+            headers=auth_header(2),
         )
         assert res_page2.status_code == 200
 
@@ -70,7 +72,7 @@ def test_feed_ot_all_cases(client: TestClient, db_session: Session):
     # [실패 3] size < 1 경계값 유효성 검사 실패 -> 400 VALIDATION_ERROR
     res_bad_size = client.get(
         "/api/v1/feed/ot?size=0",
-        headers={"Authorization": "Bearer valid_token"},
+        headers=auth_header(2),
     )
     assert res_bad_size.status_code == 400
     assert res_bad_size.json()["error"]["code"] == "VALIDATION_ERROR"
@@ -95,7 +97,7 @@ def test_feed_ot_all_cases(client: TestClient, db_session: Session):
 
     res_p1 = client.get(
         "/api/v1/feed/ot?size=1",
-        headers={"Authorization": "Bearer user_2"},
+        headers=auth_header(2),
     )
     assert res_p1.status_code == 200
     p1_data = res_p1.json()["data"]
@@ -106,7 +108,7 @@ def test_feed_ot_all_cases(client: TestClient, db_session: Session):
     vid_cursor = base64.b64encode(json.dumps({"videoId": first_id}).encode()).decode()
     res_p2 = client.get(
         f"/api/v1/feed/ot?size=1&cursor={vid_cursor}",
-        headers={"Authorization": "Bearer user_2"},
+        headers=auth_header(2),
     )
     assert res_p2.status_code == 200
     p2_data = res_p2.json()["data"]
@@ -116,7 +118,7 @@ def test_feed_ot_all_cases(client: TestClient, db_session: Session):
     # 마지막 OT 영상 이후 커서로 조회 시 첫 번째 OT로 순환(loop) 확인
     res_loop = client.get(
         f"/api/v1/feed/ot?size=1&cursor={p2_data['nextCursor']}",
-        headers={"Authorization": "Bearer user_2"},
+        headers=auth_header(2),
     )
     assert res_loop.status_code == 200
     assert res_loop.json()["data"]["items"][0]["videoId"] == first_id

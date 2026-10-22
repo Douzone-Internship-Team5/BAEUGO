@@ -1,5 +1,6 @@
 import io
-from datetime import datetime, timezone
+from datetime import UTC, datetime
+
 from fastapi.testclient import TestClient
 from sqlalchemy.orm import Session
 
@@ -118,7 +119,7 @@ def test_b6_videos_crud_and_replacement(client: TestClient, db_session: Session)
         difficulty="BEGINNER",
         price_krw=0,
         status="PUBLISHED",
-        published_at=datetime.now(timezone.utc),
+        published_at=datetime.now(UTC),
     )
     db_session.add(pub_course)
     db_session.flush()
@@ -229,7 +230,7 @@ def test_b7_scripts_all_cases(client: TestClient, db_session: Session):
         difficulty="BEGINNER",
         price_krw=0,
         status="PUBLISHED",
-        published_at=datetime.now(timezone.utc),
+        published_at=datetime.now(UTC),
     )
     db_session.add(pub_course)
     db_session.flush()
@@ -301,6 +302,7 @@ def test_b6_cross_section_unit_quiz_auto_create_and_json_patch(
     client: TestClient, db_session: Session
 ):
     from sqlalchemy import select
+
     from app.models.course import Quiz
 
     c1 = Course(
@@ -359,7 +361,9 @@ def test_b6_cross_section_unit_quiz_auto_create_and_json_patch(
     vid_id = res_lesson.json()["data"]["videoId"]
 
     unit_quiz = db_session.scalar(
-        select(Quiz).where(Quiz.section_id == sec1.id, Quiz.quiz_type == "UNIT", Quiz.is_active.is_(True))
+        select(Quiz).where(
+            Quiz.section_id == sec1.id, Quiz.quiz_type == "UNIT", Quiz.is_active.is_(True)
+        )
     )
     assert unit_quiz is not None
     assert unit_quiz.ai_status == "PENDING"
@@ -385,7 +389,7 @@ def test_b6_cross_section_unit_quiz_auto_create_and_json_patch(
 
     # [성공] PATCH 파일 교체 시 기존 COMPLETED 단위 퀴즈가 PENDING으로 초기화되는지 확인
     unit_quiz.ai_status = "COMPLETED"
-    unit_quiz.reviewed_at = datetime.now(timezone.utc)
+    unit_quiz.reviewed_at = datetime.now(UTC)
     db_session.commit()
 
     res_replace_vid = client.patch(

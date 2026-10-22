@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, Query
@@ -102,7 +102,11 @@ def update_quiz(
 ):
     course = verify_course_ownership(courseId, current_user.id, db)
     if course.status not in ("DRAFT", "EDITING"):
-        raise AppError(409, "CONFLICT", "DRAFT 또는 EDITING 상태인 강좌에서만 퀴즈를 수정하거나 재생성할 수 있습니다.")
+        raise AppError(
+            409,
+            "CONFLICT",
+            "DRAFT 또는 EDITING 상태인 강좌에서만 퀴즈를 수정하거나 재생성할 수 있습니다.",
+        )
 
     # 3~5문항, 문항당 보기 4개, 정답 1~4 및 공백 검증
     if len(req.questions) < 3 or len(req.questions) > 5:
@@ -197,7 +201,8 @@ def update_quiz(
         new_q = Question(
             quiz_id=quiz.id,
             order_no=idx,
-            generated_by=q_item.generated_by or ("AI" if quiz.quiz_type == "UNIT" else "INSTRUCTOR"),
+            generated_by=q_item.generated_by
+            or ("AI" if quiz.quiz_type == "UNIT" else "INSTRUCTOR"),
             content=q_item.content,
             explanation=q_item.explanation,
             correct_choice_no=q_item.correct_choice_no,
@@ -228,7 +233,7 @@ def update_quiz(
         )
 
     # 검수 시각 및 검수자 기록
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     quiz.reviewed_by = current_user.id
     quiz.reviewed_at = now
     if quiz.quiz_type == "UNIT":
@@ -251,7 +256,9 @@ def update_quiz(
     )
 
 
-@router.post("/courses/{courseId}/quiz/regenerate", response_model=DataResponse[QuizRegenerateResponseData])
+@router.post(
+    "/courses/{courseId}/quiz/regenerate", response_model=DataResponse[QuizRegenerateResponseData]
+)
 def regenerate_unit_quiz(
     courseId: int,
     db: DbSession,
@@ -260,7 +267,11 @@ def regenerate_unit_quiz(
 ):
     course = verify_course_ownership(courseId, current_user.id, db)
     if course.status not in ("DRAFT", "EDITING"):
-        raise AppError(409, "CONFLICT", "DRAFT 또는 EDITING 상태인 강좌에서만 퀴즈를 수정하거나 재생성할 수 있습니다.")
+        raise AppError(
+            409,
+            "CONFLICT",
+            "DRAFT 또는 EDITING 상태인 강좌에서만 퀴즈를 수정하거나 재생성할 수 있습니다.",
+        )
 
     verify_section_ownership(sectionId, current_user.id, db, course_id=course.id)
     quiz = db.scalar(

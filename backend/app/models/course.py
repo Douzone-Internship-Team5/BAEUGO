@@ -40,7 +40,9 @@ class Course(Base, TimestampMixin):
     )
     title: Mapped[str] = mapped_column(String(200), nullable=False)
     description: Mapped[str] = mapped_column(Text, nullable=False)
-    difficulty: Mapped[str] = mapped_column(String(20), nullable=False)  # BEGINNER, INTERMEDIATE, ADVANCED
+    difficulty: Mapped[str] = mapped_column(
+        String(20), nullable=False
+    )  # BEGINNER, INTERMEDIATE, ADVANCED
     price_krw: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     status: Mapped[str] = mapped_column(
         String(20), default="DRAFT", nullable=False, index=True
@@ -58,7 +60,10 @@ class Course(Base, TimestampMixin):
     topic: Mapped[Topic] = relationship("Topic", foreign_keys=[topic_id])
 
     sections: Mapped[list[Section]] = relationship(
-        "Section", back_populates="course", cascade="all, delete-orphan", order_by="Section.sort_order"
+        "Section",
+        back_populates="course",
+        cascade="all, delete-orphan",
+        order_by="Section.sort_order",
     )
     videos: Mapped[list[Video]] = relationship(
         "Video", back_populates="course", cascade="all, delete-orphan", order_by="Video.sort_order"
@@ -120,7 +125,9 @@ class Video(Base, TimestampMixin):
     stt_status: Mapped[str] = mapped_column(
         String(20), default="PENDING", nullable=False
     )  # PENDING, PROCESSING, COMPLETED, FAILED
-    transcript_reviewed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    transcript_reviewed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     view_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     like_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
@@ -128,7 +135,10 @@ class Video(Base, TimestampMixin):
     course: Mapped[Course] = relationship("Course", back_populates="videos")
     section: Mapped[Section | None] = relationship("Section", back_populates="videos")
     scripts: Mapped[list[VideoScript]] = relationship(
-        "VideoScript", back_populates="video", cascade="all, delete-orphan", order_by="VideoScript.seq"
+        "VideoScript",
+        back_populates="video",
+        cascade="all, delete-orphan",
+        order_by="VideoScript.seq",
     )
 
 
@@ -171,7 +181,10 @@ class Quiz(Base, TimestampMixin):
     course: Mapped[Course] = relationship("Course", back_populates="quizzes")
     section: Mapped[Section | None] = relationship("Section", back_populates="quizzes")
     questions: Mapped[list[Question]] = relationship(
-        "Question", back_populates="quiz", cascade="all, delete-orphan", order_by="Question.order_no"
+        "Question",
+        back_populates="quiz",
+        cascade="all, delete-orphan",
+        order_by="Question.order_no",
     )
 
 
@@ -184,7 +197,9 @@ class Question(Base, TimestampMixin):
         BigInteger, ForeignKey("quizzes.id", ondelete="CASCADE"), nullable=False, index=True
     )
     order_no: Mapped[int] = mapped_column(Integer, nullable=False)
-    generated_by: Mapped[str] = mapped_column(String(20), default="AI", nullable=False)  # AI, INSTRUCTOR
+    generated_by: Mapped[str] = mapped_column(
+        String(20), default="AI", nullable=False
+    )  # AI, INSTRUCTOR
     content: Mapped[str] = mapped_column(Text, nullable=False)
     explanation: Mapped[str] = mapped_column(Text, nullable=False)
     correct_choice_no: Mapped[int] = mapped_column(SmallInteger, nullable=False)  # 1~4

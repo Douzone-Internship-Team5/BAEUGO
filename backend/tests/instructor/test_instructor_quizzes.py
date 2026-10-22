@@ -1,4 +1,5 @@
-from datetime import datetime, timezone
+from datetime import UTC, datetime
+
 from fastapi.testclient import TestClient
 from sqlalchemy.orm import Session
 
@@ -34,8 +35,18 @@ def test_b8_quizzes_crud_and_validation(client: TestClient, db_session: Session)
         f"/api/v1/instructor/courses/{course.id}/quiz",
         json={
             "questions": [
-                {"content": "문제 1", "choices": ["1", "2", "3", "4"], "correctChoiceNo": 1, "explanation": "해설"},
-                {"content": "문제 2", "choices": ["1", "2", "3", "4"], "correctChoiceNo": 2, "explanation": "해설"},
+                {
+                    "content": "문제 1",
+                    "choices": ["1", "2", "3", "4"],
+                    "correctChoiceNo": 1,
+                    "explanation": "해설",
+                },
+                {
+                    "content": "문제 2",
+                    "choices": ["1", "2", "3", "4"],
+                    "correctChoiceNo": 2,
+                    "explanation": "해설",
+                },
             ]
         },
     )
@@ -47,7 +58,12 @@ def test_b8_quizzes_crud_and_validation(client: TestClient, db_session: Session)
         f"/api/v1/instructor/courses/{course.id}/quiz",
         json={
             "questions": [
-                {"content": f"문제 {i}", "choices": ["1", "2", "3", "4"], "correctChoiceNo": 1, "explanation": "해설"}
+                {
+                    "content": f"문제 {i}",
+                    "choices": ["1", "2", "3", "4"],
+                    "correctChoiceNo": 1,
+                    "explanation": "해설",
+                }
                 for i in range(1, 7)
             ]
         },
@@ -59,7 +75,12 @@ def test_b8_quizzes_crud_and_validation(client: TestClient, db_session: Session)
         f"/api/v1/instructor/courses/{course.id}/quiz",
         json={
             "questions": [
-                {"content": f"문제 {i}", "choices": ["1", "2", "3"], "correctChoiceNo": 1, "explanation": "해설"}
+                {
+                    "content": f"문제 {i}",
+                    "choices": ["1", "2", "3"],
+                    "correctChoiceNo": 1,
+                    "explanation": "해설",
+                }
                 for i in range(1, 4)
             ]
         },
@@ -70,7 +91,12 @@ def test_b8_quizzes_crud_and_validation(client: TestClient, db_session: Session)
         f"/api/v1/instructor/courses/{course.id}/quiz",
         json={
             "questions": [
-                {"content": f"문제 {i}", "choices": ["1", "2", "3", "4", "5"], "correctChoiceNo": 1, "explanation": "해설"}
+                {
+                    "content": f"문제 {i}",
+                    "choices": ["1", "2", "3", "4", "5"],
+                    "correctChoiceNo": 1,
+                    "explanation": "해설",
+                }
                 for i in range(1, 4)
             ]
         },
@@ -82,9 +108,24 @@ def test_b8_quizzes_crud_and_validation(client: TestClient, db_session: Session)
         f"/api/v1/instructor/courses/{course.id}/quiz",
         json={
             "questions": [
-                {"content": "문제 1", "choices": ["1", "2", "3", "4"], "correctChoiceNo": 5, "explanation": "해설"},
-                {"content": "문제 2", "choices": ["1", "2", "3", "4"], "correctChoiceNo": 0, "explanation": "해설"},
-                {"content": "문제 3", "choices": ["1", "2", "3", "4"], "correctChoiceNo": 1, "explanation": "해설"},
+                {
+                    "content": "문제 1",
+                    "choices": ["1", "2", "3", "4"],
+                    "correctChoiceNo": 5,
+                    "explanation": "해설",
+                },
+                {
+                    "content": "문제 2",
+                    "choices": ["1", "2", "3", "4"],
+                    "correctChoiceNo": 0,
+                    "explanation": "해설",
+                },
+                {
+                    "content": "문제 3",
+                    "choices": ["1", "2", "3", "4"],
+                    "correctChoiceNo": 1,
+                    "explanation": "해설",
+                },
             ]
         },
     )
@@ -144,7 +185,7 @@ def test_b8_quizzes_crud_and_validation(client: TestClient, db_session: Session)
         difficulty="BEGINNER",
         price_krw=0,
         status="PUBLISHED",
-        published_at=datetime.now(timezone.utc),
+        published_at=datetime.now(UTC),
     )
     db_session.add(pub_course)
     db_session.flush()
@@ -238,7 +279,12 @@ def test_question_order_negation_on_update(client: TestClient, db_session: Sessi
     # 문항 교체 요청 (기존 문항 1이 보존되고 음수 order_no를 가져야 함)
     new_payload = {
         "questions": [
-            {"content": f"새 문항 {i}", "choices": ["A", "B", "C", "D"], "correctChoiceNo": 2, "explanation": f"새 해설 {i}"}
+            {
+                "content": f"새 문항 {i}",
+                "choices": ["A", "B", "C", "D"],
+                "correctChoiceNo": 2,
+                "explanation": f"새 해설 {i}",
+            }
             for i in range(1, 4)
         ]
     }

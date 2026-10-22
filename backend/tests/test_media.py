@@ -1,9 +1,9 @@
-from pathlib import Path
 from fastapi.testclient import TestClient
 from sqlalchemy.orm import Session
 
 from app.models.course import Course, Video
 from app.services.storage import get_media_dir
+from tests.conftest import auth_header
 
 
 def test_media_file_serving(client: TestClient):
@@ -121,7 +121,7 @@ def test_video_streaming(client: TestClient, db_session: Session):
         # 미수강 학습자(id=2) 요청 -> 403 FORBIDDEN
         res_lesson_unenrolled = client.get(
             f"/api/v1/videos/{lesson_vid.id}/stream",
-            headers={"Authorization": "Bearer learner"},
+            headers=auth_header(2),
         )
         assert res_lesson_unenrolled.status_code == 403
         assert res_lesson_unenrolled.json()["error"]["code"] == "FORBIDDEN"
@@ -143,21 +143,21 @@ def test_video_streaming(client: TestClient, db_session: Session):
         db_session.commit()
         res_other_inst = client.get(
             f"/api/v1/videos/{lesson_vid.id}/stream",
-            headers={"Authorization": "Bearer user_99"},
+            headers=auth_header(99),
         )
         assert res_other_inst.status_code == 403
 
         # 운영자(id=1) 요청 -> 200 OK
         res_operator = client.get(
             f"/api/v1/videos/{lesson_vid.id}/stream",
-            headers={"Authorization": "Bearer operator"},
+            headers=auth_header(1),
         )
         assert res_operator.status_code == 200
 
         # 담당 강사(id=6) 요청 -> 200 OK
         res_lesson_inst = client.get(
             f"/api/v1/videos/{lesson_vid.id}/stream",
-            headers={"Authorization": "Bearer instructor"},
+            headers=auth_header(6),
         )
         assert res_lesson_inst.status_code == 200
 
@@ -166,7 +166,7 @@ def test_video_streaming(client: TestClient, db_session: Session):
         db_session.commit()
         res_lesson_enrolled = client.get(
             f"/api/v1/videos/{lesson_vid.id}/stream",
-            headers={"Authorization": "Bearer learner"},
+            headers=auth_header(2),
         )
         assert res_lesson_enrolled.status_code == 200
     finally:

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, Query, Request, UploadFile
@@ -14,7 +14,7 @@ from app.core.auth import (
 from app.core.database import DbSession
 from app.core.errors import AppError
 from app.models.category import Category, Topic
-from app.models.course import Course, Question, Quiz, Section, Video
+from app.models.course import Course, Question, Quiz, Section
 from app.models.user import User
 from app.schemas.common import DataResponse
 from app.schemas.instructor import (
@@ -109,7 +109,9 @@ def list_my_courses(
         query = query.where(Course.status == status)
 
     total = db.scalar(select(func.count()).select_from(query.order_by(None).subquery())) or 0
-    courses = db.scalars(query.order_by(desc(Course.id)).offset((page - 1) * size).limit(size)).all()
+    courses = db.scalars(
+        query.order_by(desc(Course.id)).offset((page - 1) * size).limit(size)
+    ).all()
 
     items: list[InstructorCourseItem] = []
     for c in courses:
@@ -171,7 +173,9 @@ def get_course_detail_for_edit(
         .options(
             selectinload(Course.videos),
             selectinload(Course.sections).selectinload(Section.videos),
-            selectinload(Course.quizzes).selectinload(Quiz.questions).selectinload(Question.choices),
+            selectinload(Course.quizzes)
+            .selectinload(Quiz.questions)
+            .selectinload(Question.choices),
         )
     )
     if not course:
@@ -248,7 +252,9 @@ def get_course_detail_for_edit(
         )
 
     # 종합 퀴즈
-    final_quiz_obj = next((q for q in course.quizzes if q.quiz_type == "FINAL" and q.is_active), None)
+    final_quiz_obj = next(
+        (q for q in course.quizzes if q.quiz_type == "FINAL" and q.is_active), None
+    )
     final_quiz_dto = None
     if final_quiz_obj:
         active_q_count = sum(1 for q in final_quiz_obj.questions if q.is_active)
@@ -342,7 +348,9 @@ async def create_course(
 
     categoryId = _parse_int_field(category_raw, "categoryId")
     topicId = _parse_int_field(topic_raw, "topicId")
-    priceKrw = 0 if (price_raw is None or price_raw == "") else _parse_int_field(price_raw, "priceKrw")
+    priceKrw = (
+        0 if (price_raw is None or price_raw == "") else _parse_int_field(price_raw, "priceKrw")
+    )
 
     # categoryId 및 topicId 소속/활성 검증
     category = db.get(Category, categoryId)
@@ -542,7 +550,9 @@ def delete_course(
 # ==========================================
 # [B-4] 강좌 공개 및 수정 시작
 # ==========================================
-@router.put("/courses/{courseId}/status", response_model=DataResponse[CourseStatusUpdateResponseData])
+@router.put(
+    "/courses/{courseId}/status", response_model=DataResponse[CourseStatusUpdateResponseData]
+)
 def update_course_status(
     courseId: int,
     req: CourseStatusUpdateRequest,
@@ -555,7 +565,9 @@ def update_course_status(
         .options(
             selectinload(Course.videos),
             selectinload(Course.sections).selectinload(Section.videos),
-            selectinload(Course.quizzes).selectinload(Quiz.questions).selectinload(Question.choices),
+            selectinload(Course.quizzes)
+            .selectinload(Quiz.questions)
+            .selectinload(Question.choices),
         )
     )
     if not course:
@@ -579,7 +591,7 @@ def update_course_status(
                 missing=missing,
             )
 
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         course.status = "PUBLISHED"
         course.published_at = now
         course.closed_by_user_id = None
@@ -608,7 +620,7 @@ def update_course_status(
                 "현재 강좌 상태에서는 요청한 상태로 전환할 수 없습니다.",
             )
 
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         course.status = "EDITING"
         course.closed_by_user_id = current_user.id
         course.closed_at = now

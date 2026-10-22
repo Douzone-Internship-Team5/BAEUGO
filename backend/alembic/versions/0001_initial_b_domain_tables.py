@@ -6,12 +6,11 @@ Create Date: 2026-10-22
 """
 
 from alembic import op
-import sqlalchemy as sa
 from app.models import Base
 
 # revision identifiers, used by Alembic.
 revision = "0001_initial_b_domain_tables"
-down_revision = None
+down_revision = "c18105b3bd65"
 branch_labels = None
 depends_on = None
 

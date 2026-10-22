@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, File, Form, Request, UploadFile
@@ -49,7 +49,9 @@ def upload_video(
 ):
     course = verify_course_ownership(courseId, current_user.id, db)
     if course.status not in ("DRAFT", "EDITING"):
-        raise AppError(409, "CONFLICT", "DRAFT 또는 EDITING 상태인 강좌에서만 영상을 편집할 수 있습니다.")
+        raise AppError(
+            409, "CONFLICT", "DRAFT 또는 EDITING 상태인 강좌에서만 영상을 편집할 수 있습니다."
+        )
 
     if videoType not in ("OT", "LESSON"):
         raise AppError(400, "VALIDATION_ERROR", "영상 유형은 OT 또는 LESSON이어야 합니다.")
@@ -163,7 +165,9 @@ async def update_or_replace_video(
     video = verify_video_ownership(videoId, current_user.id, db)
     course = video.course
     if course.status not in ("DRAFT", "EDITING"):
-        raise AppError(409, "CONFLICT", "DRAFT 또는 EDITING 상태인 강좌에서만 영상을 편집할 수 있습니다.")
+        raise AppError(
+            409, "CONFLICT", "DRAFT 또는 EDITING 상태인 강좌에서만 영상을 편집할 수 있습니다."
+        )
 
     content_type = request.headers.get("content-type", "")
     title: str | None = None
@@ -299,7 +303,9 @@ async def update_or_replace_video(
     if sortOrder is not None:
         video.sort_order = sortOrder
     if thumbnail is not None:
-        video.thumbnail_storage_key = save_upload_file(thumbnail, f"courses/{course.id}/videos", "vthumb")
+        video.thumbnail_storage_key = save_upload_file(
+            thumbnail, f"courses/{course.id}/videos", "vthumb"
+        )
 
     db.commit()
     db.refresh(video)
@@ -329,7 +335,9 @@ def delete_video(
     video = verify_video_ownership(videoId, current_user.id, db)
     course = video.course
     if course.status not in ("DRAFT", "EDITING"):
-        raise AppError(409, "CONFLICT", "DRAFT 또는 EDITING 상태인 강좌에서만 영상을 편집할 수 있습니다.")
+        raise AppError(
+            409, "CONFLICT", "DRAFT 또는 EDITING 상태인 강좌에서만 영상을 편집할 수 있습니다."
+        )
 
     video.is_active = False
     db.commit()
@@ -383,7 +391,11 @@ def update_video_script(
     video = verify_video_ownership(videoId, current_user.id, db)
     course = video.course
     if course.status not in ("DRAFT", "EDITING"):
-        raise AppError(409, "CONFLICT", "DRAFT 또는 EDITING 상태인 강좌에서만 대본을 수정하거나 재생성할 수 있습니다.")
+        raise AppError(
+            409,
+            "CONFLICT",
+            "DRAFT 또는 EDITING 상태인 강좌에서만 대본을 수정하거나 재생성할 수 있습니다.",
+        )
 
     seen_seqs: set[int] = set()
     for seg in req.segments:
@@ -393,9 +405,15 @@ def update_video_script(
             raise AppError(400, "VALIDATION_ERROR", "중복된 자막 순번(seq)이 존재합니다.")
         seen_seqs.add(seg.seq)
         if seg.start_ms < 0:
-            raise AppError(400, "VALIDATION_ERROR", "자막 시작 시점(startMs)은 0 이상이어야 합니다.")
+            raise AppError(
+                400, "VALIDATION_ERROR", "자막 시작 시점(startMs)은 0 이상이어야 합니다."
+            )
         if seg.end_ms <= seg.start_ms:
-            raise AppError(400, "VALIDATION_ERROR", "자막 종료 시점(endMs)은 시작 시점(startMs)보다 커야 합니다.")
+            raise AppError(
+                400,
+                "VALIDATION_ERROR",
+                "자막 종료 시점(endMs)은 시작 시점(startMs)보다 커야 합니다.",
+            )
         if not seg.content or not seg.content.strip():
             raise AppError(400, "VALIDATION_ERROR", "자막 내용(content)은 비어 있을 수 없습니다.")
 
@@ -415,7 +433,7 @@ def update_video_script(
             )
         )
 
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     video.stt_status = "COMPLETED"
     video.transcript_reviewed_at = now
 
@@ -432,7 +450,9 @@ def update_video_script(
     )
 
 
-@router.post("/videos/{videoId}/script/regenerate", response_model=DataResponse[ScriptRegenerateResponseData])
+@router.post(
+    "/videos/{videoId}/script/regenerate", response_model=DataResponse[ScriptRegenerateResponseData]
+)
 def regenerate_video_script(
     videoId: int,
     db: DbSession,
@@ -441,7 +461,11 @@ def regenerate_video_script(
     video = verify_video_ownership(videoId, current_user.id, db)
     course = video.course
     if course.status not in ("DRAFT", "EDITING"):
-        raise AppError(409, "CONFLICT", "DRAFT 또는 EDITING 상태인 강좌에서만 대본을 수정하거나 재생성할 수 있습니다.")
+        raise AppError(
+            409,
+            "CONFLICT",
+            "DRAFT 또는 EDITING 상태인 강좌에서만 대본을 수정하거나 재생성할 수 있습니다.",
+        )
 
     video.stt_status = "PENDING"
     video.transcript_reviewed_at = None

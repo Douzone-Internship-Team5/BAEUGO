@@ -1,11 +1,11 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from app.models.course import Course, Question, QuestionChoice, Quiz, Section, Video
+from app.models.course import Course
 from app.models.learning import Enrollment, QuestionRecord, QuizAttempt, VideoProgress
 
 
@@ -121,15 +121,10 @@ def recalculate_enrollments_progress(course: Course, db: Session) -> None:
     active_lesson_ids = {v.id for v in active_lessons}
     active_quiz_ids = {q.id for q in active_quizzes}
     active_question_ids = {
-        quest.id
-        for q in active_quizzes
-        for quest in q.questions
-        if quest.is_active
+        quest.id for q in active_quizzes for quest in q.questions if quest.is_active
     }
 
-    enrollments = db.scalars(
-        select(Enrollment).where(Enrollment.course_id == course.id)
-    ).all()
+    enrollments = db.scalars(select(Enrollment).where(Enrollment.course_id == course.id)).all()
     if not enrollments:
         return
 
@@ -179,7 +174,7 @@ def recalculate_enrollments_progress(course: Course, db: Session) -> None:
         unresolved_counts = {lid: cnt for lid, cnt in raw_unresolved}
 
     # 4. 인메모리 매핑으로 상태 일괄 갱신 (반복 쿼리 제거)
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     for enr in enrollments:
         completed_videos_cnt = video_counts.get(enr.id, 0)
         submitted_quizzes_cnt = quiz_counts.get(enr.learner_id, 0)

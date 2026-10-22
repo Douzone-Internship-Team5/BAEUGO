@@ -21,7 +21,7 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 from app.models.base import Base, BigIntId, TimestampMixin
 
 if TYPE_CHECKING:
-    from app.models.course import Course, Question, Quiz, Video
+    from app.models.course import Course, Question, Video
     from app.models.user import User
 
 
@@ -43,8 +43,12 @@ class Enrollment(Base, TimestampMixin):
     )  # IN_PROGRESS, COMPLETED
     access_source: Mapped[str] = mapped_column(String(20), default="DEMO_GRANT", nullable=False)
     price_snapshot_krw: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
-    first_completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    current_completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    first_completed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    current_completed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     enrolled_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
@@ -121,7 +125,9 @@ class QuizAttempt(Base, TimestampMixin):
     learner_id: Mapped[int] = mapped_column(
         BigInteger, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
     )
-    attempt_type: Mapped[str] = mapped_column(String(20), nullable=False)  # UNIT, FINAL, WRONG_REVIEW
+    attempt_type: Mapped[str] = mapped_column(
+        String(20), nullable=False
+    )  # UNIT, FINAL, WRONG_REVIEW
     attempt_no: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
     status: Mapped[str] = mapped_column(
         String(20), default="IN_PROGRESS", nullable=False
@@ -151,7 +157,10 @@ class AttemptQuestion(Base, TimestampMixin):
     attempt: Mapped[QuizAttempt] = relationship("QuizAttempt", back_populates="attempt_questions")
     question: Mapped[Question] = relationship("Question")
     answer: Mapped[QuestionAnswer | None] = relationship(
-        "QuestionAnswer", back_populates="attempt_question", uselist=False, cascade="all, delete-orphan"
+        "QuestionAnswer",
+        back_populates="attempt_question",
+        uselist=False,
+        cascade="all, delete-orphan",
     )
 
 

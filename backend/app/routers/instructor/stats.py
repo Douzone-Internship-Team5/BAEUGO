@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import calendar
-from datetime import date, datetime, timedelta, timezone
+from datetime import UTC, date, datetime, timedelta, timezone
 from typing import Annotated
 from zoneinfo import ZoneInfo
 
@@ -45,7 +45,7 @@ def _shift_prev_month(d: date) -> date:
 
 def _to_kst_date(dt: datetime) -> date:
     if dt.tzinfo is None:
-        return dt.replace(tzinfo=timezone.utc).astimezone(KST).date()
+        return dt.replace(tzinfo=UTC).astimezone(KST).date()
     return dt.astimezone(KST).date()
 
 
@@ -75,7 +75,9 @@ def get_instructor_stats(
         fromDate = date(toDate.year, toDate.month, 1)
 
     if fromDate > toDate:
-        raise AppError(400, "VALIDATION_ERROR", "조회 시작일(from)은 종료일(to)보다 늦을 수 없습니다.")
+        raise AppError(
+            400, "VALIDATION_ERROR", "조회 시작일(from)은 종료일(to)보다 늦을 수 없습니다."
+        )
 
     # 강사 소유 강좌 목록
     my_courses_query = select(Course).where(Course.instructor_id == current_user.id)
@@ -147,9 +149,7 @@ def get_instructor_stats(
     prev_tot_first_ans = sum(s.first_answer_cnt for s in prev_rows)
     prev_tot_first_corr = sum(s.first_correct_cnt for s in prev_rows)
     prev_quiz_corr_rate = (
-        round(prev_tot_first_corr / prev_tot_first_ans * 100, 1)
-        if prev_tot_first_ans > 0
-        else None
+        round(prev_tot_first_corr / prev_tot_first_ans * 100, 1) if prev_tot_first_ans > 0 else None
     )
 
     quiz_resp_diff_pt = (

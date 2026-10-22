@@ -1,4 +1,5 @@
-from datetime import date, datetime, timezone
+from datetime import UTC, date, datetime
+
 from fastapi.testclient import TestClient
 from sqlalchemy.orm import Session
 
@@ -15,7 +16,7 @@ def test_b9_instructor_stats_all_cases(client: TestClient, db_session: Session):
         difficulty="BEGINNER",
         price_krw=10000,
         status="PUBLISHED",
-        published_at=datetime.now(timezone.utc),
+        published_at=datetime.now(UTC),
     )
     db_session.add(course)
     db_session.flush()
@@ -44,7 +45,7 @@ def test_b9_instructor_stats_all_cases(client: TestClient, db_session: Session):
     assert day_data["summary"]["lessonViews"] == 100
     assert day_data["summary"]["newStudents"] == 10
     assert day_data["summary"]["quizResponseRate"] == 90.0  # 18/20 * 100
-    assert day_data["summary"]["quizCorrectRate"] == 80.0   # 40/50 * 100
+    assert day_data["summary"]["quizCorrectRate"] == 80.0  # 40/50 * 100
     assert len(day_data["dailyStats"]) == 1
 
     # [성공 2] groupBy=course 조회
@@ -80,7 +81,7 @@ def test_b9_instructor_stats_all_cases(client: TestClient, db_session: Session):
         difficulty="BEGINNER",
         price_krw=0,
         status="PUBLISHED",
-        published_at=datetime(2026, 3, 15, tzinfo=timezone.utc),
+        published_at=datetime(2026, 3, 15, tzinfo=UTC),
     )
     db_session.add(empty_course)
     db_session.flush()

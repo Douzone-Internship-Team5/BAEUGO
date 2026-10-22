@@ -4,17 +4,16 @@ import base64
 import json
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, Header, Query
+from fastapi import APIRouter, Depends, Query
 from sqlalchemy import case, desc, select
 from sqlalchemy.orm import joinedload
 
 from app.core.auth import get_current_user
 from app.core.database import DbSession
-from app.core.errors import AppError
-from app.models.category import Category, Topic
 from app.models.course import Course, Video
 from app.models.learning import Enrollment, VideoLike
-from app.models.user import LearnerProfile, LearnerTopicInterest, User
+from app.models.profile import LearnerTopicInterest
+from app.models.user import User
 from app.schemas.common import CursorPageData, DataResponse
 from app.schemas.course import FeedCourseInfo, FeedInstructorInfo, FeedOtItem
 from app.services.storage import (
@@ -30,13 +29,9 @@ router = APIRouter(prefix="/feed", tags=["feed"])
 def get_ot_feed(
     db: DbSession,
     current_user: Annotated[User, Depends(get_current_user)],
-    authorization: Annotated[str | None, Header()] = None,
     cursor: str | None = Query(None, description="다음 페이지 커서"),
     size: int = Query(10, ge=1, le=100),
 ):
-    if not authorization:
-        raise AppError(401, "UNAUTHORIZED", "로그인이 필요합니다.")
-
     # 유저의 관심 직무 및 토픽 조회
     learner_prof = current_user.learner_profile
     target_category_id = learner_prof.target_category_id if learner_prof else None
@@ -51,9 +46,7 @@ def get_ot_feed(
     order_clauses = []
     if interest_topic_ids or target_category_id:
         topic_match_score = (
-            case((Course.topic_id.in_(interest_topic_ids), 2), else_=0)
-            if interest_topic_ids
-            else 0
+            case((Course.topic_id.in_(interest_topic_ids), 2), else_=0) if interest_topic_ids else 0
         )
         cat_match_score = (
             case((Course.category_id == target_category_id, 1), else_=0)
@@ -62,12 +55,14 @@ def get_ot_feed(
         )
         order_clauses.append(desc(topic_match_score + cat_match_score))
 
-    order_clauses.extend([
-        desc(Video.view_count),
-        desc(Video.like_count),
-        desc(Course.published_at),
-        desc(Video.id),
-    ])
+    order_clauses.extend(
+        [
+            desc(Video.view_count),
+            desc(Video.like_count),
+            desc(Course.published_at),
+            desc(Video.id),
+        ]
+    )
 
     # DB 레벨에서 정렬 및 Eager Loading(N+1 방지)
     query = (
@@ -75,7 +70,9 @@ def get_ot_feed(
         .join(Course, Course.id == Video.course_id)
         .options(
             joinedload(Video.course).joinedload(Course.category),
-            joinedload(Video.course).joinedload(Course.instructor).joinedload(User.instructor_profile),
+            joinedload(Video.course)
+            .joinedload(Course.instructor)
+            .joinedload(User.instructor_profile),
         )
         .where(
             Course.status == "PUBLISHED",

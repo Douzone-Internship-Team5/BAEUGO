@@ -1,12 +1,10 @@
 from __future__ import annotations
 
-from typing import Annotated
-
-from fastapi import APIRouter, Header
+from fastapi import APIRouter
 from fastapi.responses import FileResponse
 from sqlalchemy import select
 
-from app.core.auth import get_optional_current_user
+from app.core.auth import OptionalUser
 from app.core.database import DbSession
 from app.core.errors import AppError
 from app.models.course import Course, Video
@@ -45,7 +43,7 @@ def serve_media_file(storageKey: str):
 def stream_video(
     id: int,
     db: DbSession,
-    authorization: Annotated[str | None, Header()] = None,
+    current_user: OptionalUser = None,
 ):
     video = db.get(Video, id)
     if not video or not video.is_active:
@@ -53,9 +51,10 @@ def stream_video(
 
     # 학습 영상(LESSON)은 수강 중인 학습자, 담당 강사, 운영자만 시청 가능
     if video.video_type == "LESSON":
-        current_user = get_optional_current_user(db, authorization)
         if not current_user:
-            raise AppError(403, "FORBIDDEN", "수강 중인 학습자 또는 담당 강사만 시청할 수 있습니다.")
+            raise AppError(
+                403, "FORBIDDEN", "수강 중인 학습자 또는 담당 강사만 시청할 수 있습니다."
+            )
 
         course = video.course or db.get(Course, video.course_id)
         is_owner_instructor = course is not None and course.instructor_id == current_user.id
@@ -72,7 +71,9 @@ def stream_video(
             is not None
         )
         if not (is_owner_instructor or is_operator or is_enrolled):
-            raise AppError(403, "FORBIDDEN", "수강 중인 학습자 또는 담당 강사만 시청할 수 있습니다.")
+            raise AppError(
+                403, "FORBIDDEN", "수강 중인 학습자 또는 담당 강사만 시청할 수 있습니다."
+            )
 
     media_dir = get_media_dir().resolve()
     try:

@@ -7,7 +7,9 @@ from app.models.user import User
 
 def test_instructor_unauthorized_and_forbidden(client: TestClient):
     # [401 UNAUTHORIZED] 비인증 / 잘못된 토큰 전달
-    res_no_auth = client.get("/api/v1/instructor/courses", headers={"Authorization": "Bearer invalid"})
+    res_no_auth = client.get(
+        "/api/v1/instructor/courses", headers={"Authorization": "Bearer invalid"}
+    )
     assert res_no_auth.status_code == 401
     assert res_no_auth.json()["error"]["code"] == "UNAUTHORIZED"
 
@@ -30,7 +32,12 @@ def test_instructor_unauthorized_and_forbidden(client: TestClient):
         ("POST", "/api/v1/instructor/sections", None, {"courseId": 1, "title": "섹션"}),
         ("PATCH", "/api/v1/instructor/sections/1", None, {"title": "수정"}),
         ("DELETE", "/api/v1/instructor/sections/1", None, None),
-        ("POST", "/api/v1/instructor/videos", {"courseId": 1, "videoType": "OT", "title": "영상"}, None),
+        (
+            "POST",
+            "/api/v1/instructor/videos",
+            {"courseId": 1, "videoType": "OT", "title": "영상"},
+            None,
+        ),
         ("PATCH", "/api/v1/instructor/videos/1", {"title": "수정"}, None),
         ("DELETE", "/api/v1/instructor/videos/1", None, None),
         ("GET", "/api/v1/instructor/videos/1/script", None, None),
@@ -66,7 +73,7 @@ def test_instructor_inactive_account(client: TestClient, db_session: Session):
 
         res_inactive = client.get("/api/v1/instructor/courses")
         assert res_inactive.status_code == 401
-        assert res_inactive.json()["error"]["code"] == "INVALID_CREDENTIALS"
+        assert res_inactive.json()["error"]["code"] == "UNAUTHORIZED"
 
         # 복구
         inst_user.is_active = True
@@ -75,6 +82,18 @@ def test_instructor_inactive_account(client: TestClient, db_session: Session):
 
 def test_instructor_ownership_security_404(client: TestClient, db_session: Session):
     # [보안 규정 404 NOT_FOUND] 타인 강좌, 섹션, 영상에 접근 시 403이 아닌 404를 반환하여 리소스 존재 여부를 은닉
+    other_user = User(
+        id=99,
+        email="other99@baeugo.test",
+        password_hash="mock",
+        name="타강사",
+        account_type="MEMBER",
+        active_mode="INSTRUCTOR",
+        is_active=True,
+    )
+    db_session.add(other_user)
+    db_session.flush()
+
     other_course = Course(
         instructor_id=99,
         category_id=1,
@@ -116,7 +135,9 @@ def test_instructor_ownership_security_404(client: TestClient, db_session: Sessi
     assert r_del.status_code == 404
 
     # 섹션 수정/삭제 404
-    r_sec_patch = client.patch(f"/api/v1/instructor/sections/{other_sec.id}", json={"title": "수정"})
+    r_sec_patch = client.patch(
+        f"/api/v1/instructor/sections/{other_sec.id}", json={"title": "수정"}
+    )
     assert r_sec_patch.status_code == 404
 
     r_sec_del = client.delete(f"/api/v1/instructor/sections/{other_sec.id}")

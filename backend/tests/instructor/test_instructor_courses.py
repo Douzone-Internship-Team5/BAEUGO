@@ -1,9 +1,9 @@
 import io
-from datetime import datetime, timezone
+from datetime import UTC, datetime
+
 from fastapi.testclient import TestClient
 from sqlalchemy.orm import Session
 
-from app.models.category import Category, Topic
 from app.models.course import Course, Question, QuestionChoice, Quiz, Section, Video
 
 
@@ -27,7 +27,7 @@ def test_b1_my_courses(client: TestClient, db_session: Session):
         difficulty="INTERMEDIATE",
         price_krw=20000,
         status="PUBLISHED",
-        published_at=datetime.now(timezone.utc),
+        published_at=datetime.now(UTC),
     )
     db_session.add_all([c1, c2])
     db_session.commit()
@@ -187,7 +187,7 @@ def test_b3_course_crud(client: TestClient, db_session: Session):
         difficulty="BEGINNER",
         price_krw=0,
         status="PUBLISHED",
-        published_at=datetime.now(timezone.utc),
+        published_at=datetime.now(UTC),
     )
     db_session.add(pub_course)
     db_session.commit()
@@ -212,7 +212,7 @@ def test_b3_course_crud(client: TestClient, db_session: Session):
         difficulty="BEGINNER",
         price_krw=0,
         status="EDITING",
-        published_at=datetime.now(timezone.utc),
+        published_at=datetime.now(UTC),
     )
     db_session.add(editing_course)
     db_session.commit()
@@ -276,7 +276,7 @@ def test_b4_course_status_transitions(client: TestClient, db_session: Session):
             sort_order=0,
             video_storage_key="test/ot.mp4",
             stt_status="COMPLETED",
-            transcript_reviewed_at=datetime.now(timezone.utc),
+            transcript_reviewed_at=datetime.now(UTC),
             is_active=True,
         )
     )
@@ -295,7 +295,7 @@ def test_b4_course_status_transitions(client: TestClient, db_session: Session):
             sort_order=1,
             video_storage_key="test/lesson1.mp4",
             stt_status="COMPLETED",
-            transcript_reviewed_at=datetime.now(timezone.utc),
+            transcript_reviewed_at=datetime.now(UTC),
             is_active=True,
         )
     )
@@ -305,7 +305,7 @@ def test_b4_course_status_transitions(client: TestClient, db_session: Session):
         section_id=sec.id,
         quiz_type="UNIT",
         ai_status="COMPLETED",
-        reviewed_at=datetime.now(timezone.utc),
+        reviewed_at=datetime.now(UTC),
         is_active=True,
     )
     db_session.add(unit_q)
@@ -331,7 +331,7 @@ def test_b4_course_status_transitions(client: TestClient, db_session: Session):
         section_id=None,
         quiz_type="FINAL",
         ai_status=None,
-        reviewed_at=datetime.now(timezone.utc),
+        reviewed_at=datetime.now(UTC),
         is_active=True,
     )
     db_session.add(final_q)
@@ -393,7 +393,7 @@ def test_b2_b4_multiple_unit_quizzes_and_enrollment_recalculation(
         difficulty="BEGINNER",
         price_krw=0,
         status="EDITING",
-        published_at=datetime.now(timezone.utc),
+        published_at=datetime.now(UTC),
     )
     db_session.add(course)
     db_session.flush()
@@ -407,7 +407,7 @@ def test_b2_b4_multiple_unit_quizzes_and_enrollment_recalculation(
             sort_order=0,
             video_storage_key="test/ot.mp4",
             stt_status="COMPLETED",
-            transcript_reviewed_at=datetime.now(timezone.utc),
+            transcript_reviewed_at=datetime.now(UTC),
             is_active=True,
         )
     )
@@ -425,7 +425,7 @@ def test_b2_b4_multiple_unit_quizzes_and_enrollment_recalculation(
         sort_order=1,
         video_storage_key="test/lesson1.mp4",
         stt_status="COMPLETED",
-        transcript_reviewed_at=datetime.now(timezone.utc),
+        transcript_reviewed_at=datetime.now(UTC),
         is_active=True,
     )
     db_session.add(lesson)
@@ -437,7 +437,7 @@ def test_b2_b4_multiple_unit_quizzes_and_enrollment_recalculation(
         section_id=sec.id,
         quiz_type="UNIT",
         ai_status="COMPLETED",
-        reviewed_at=datetime.now(timezone.utc),
+        reviewed_at=datetime.now(UTC),
         is_active=False,
     )
     active_unit_q = Quiz(
@@ -445,7 +445,7 @@ def test_b2_b4_multiple_unit_quizzes_and_enrollment_recalculation(
         section_id=sec.id,
         quiz_type="UNIT",
         ai_status="COMPLETED",
-        reviewed_at=datetime.now(timezone.utc),
+        reviewed_at=datetime.now(UTC),
         is_active=True,
     )
     final_q = Quiz(
@@ -453,7 +453,7 @@ def test_b2_b4_multiple_unit_quizzes_and_enrollment_recalculation(
         section_id=None,
         quiz_type="FINAL",
         ai_status=None,
-        reviewed_at=datetime.now(timezone.utc),
+        reviewed_at=datetime.now(UTC),
         is_active=True,
     )
     db_session.add_all([inactive_unit_q, active_unit_q, final_q])
@@ -480,7 +480,7 @@ def test_b2_b4_multiple_unit_quizzes_and_enrollment_recalculation(
                 )
 
     # 수강생(id=2)이 영상과 퀴즈를 모두 이수했으나 미해결 오답(REVIEW_NEEDED)이 남아있는 경우
-    first_comp = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    first_comp = datetime(2026, 1, 1, tzinfo=UTC)
     enr = Enrollment(
         course_id=course.id,
         learner_id=2,
@@ -491,9 +491,7 @@ def test_b2_b4_multiple_unit_quizzes_and_enrollment_recalculation(
     db_session.add(enr)
     db_session.flush()
 
-    db_session.add(
-        VideoProgress(enrollment_id=enr.id, video_id=lesson.id, is_completed=True)
-    )
+    db_session.add(VideoProgress(enrollment_id=enr.id, video_id=lesson.id, is_completed=True))
     db_session.add_all(
         [
             QuizAttempt(

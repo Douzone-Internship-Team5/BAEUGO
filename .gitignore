@@ -23,3 +23,4 @@ media/
 # 개인 작업 파일
 CLAUDE.md
 .local/
+/prompt

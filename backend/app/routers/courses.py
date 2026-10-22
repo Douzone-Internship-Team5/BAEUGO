@@ -2,17 +2,17 @@ from __future__ import annotations
 
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, Header, Query
+from fastapi import APIRouter, Depends, Query
 from sqlalchemy import case, desc, func, or_, select
 from sqlalchemy.orm import joinedload, selectinload
 
 from app.core.auth import get_optional_current_user
 from app.core.database import DbSession
 from app.core.errors import AppError
-from app.models.category import Category, Topic
 from app.models.course import Course
 from app.models.learning import Enrollment
-from app.models.user import LearnerProfile, LearnerTopicInterest, User
+from app.models.profile import LearnerTopicInterest
+from app.models.user import User
 from app.schemas.common import DataResponse, PageData
 from app.schemas.course import CategorySimple, CourseSearchItem, TopicSimple
 from app.services.storage import get_thumbnail_url
@@ -31,7 +31,7 @@ def search_courses(
     sort: str = Query("popular", description="정렬 기준: popular, latest, difficulty, recommended"),
     page: int = Query(1, ge=1),
     size: int = Query(20, ge=1, le=100),
-    authorization: Annotated[str | None, Header()] = None,
+    current_user: Annotated[User | None, Depends(get_optional_current_user)] = None,
 ):
     # 유효성 검사
     if difficulty is not None and difficulty not in ("BEGINNER", "INTERMEDIATE", "ADVANCED"):
@@ -41,13 +41,11 @@ def search_courses(
     if sort not in ("popular", "latest", "difficulty", "recommended"):
         raise AppError(400, "VALIDATION_ERROR", "유효하지 않은 필터 또는 정렬 기준입니다.")
 
-    current_user: User | None = None
     if sort == "recommended":
-        if not authorization:
-            raise AppError(401, "UNAUTHORIZED", "개인화 추천(sort=recommended) 정렬은 로그인이 필요합니다.")
-        current_user = get_optional_current_user(db, authorization)
         if not current_user:
-            raise AppError(401, "UNAUTHORIZED", "개인화 추천(sort=recommended) 정렬은 로그인이 필요합니다.")
+            raise AppError(
+                401, "UNAUTHORIZED", "개인화 추천(sort=recommended) 정렬은 로그인이 필요합니다."
+            )
 
     # 기본 쿼리: PUBLISHED 강좌만
     query = select(Course).where(Course.status == "PUBLISHED")
@@ -86,9 +84,8 @@ def search_courses(
     )
 
     if sort == "popular":
-        query = (
-            query.outerjoin(enrollment_subq, Course.id == enrollment_subq.c.course_id)
-            .order_by(desc(func.coalesce(enrollment_subq.c.enr_cnt, 0)), desc(Course.id))
+        query = query.outerjoin(enrollment_subq, Course.id == enrollment_subq.c.course_id).order_by(
+            desc(func.coalesce(enrollment_subq.c.enr_cnt, 0)), desc(Course.id)
         )
     elif sort == "latest":
         query = query.order_by(desc(Course.published_at), desc(Course.id))
@@ -103,19 +100,25 @@ def search_courses(
         query = query.order_by(diff_order, desc(Course.id))
     elif sort == "recommended":
         # 사용자 관심 직무 및 토픽 기준
-        target_category_id = current_user.learner_profile.target_category_id if current_user and current_user.learner_profile else None
-        interest_topics = db.scalars(
-            select(LearnerTopicInterest.topic_id).where(
-                LearnerTopicInterest.learner_id == current_user.id
-            )
-        ).all() if current_user else []
+        target_category_id = (
+            current_user.learner_profile.target_category_id
+            if current_user and current_user.learner_profile
+            else None
+        )
+        interest_topics = (
+            db.scalars(
+                select(LearnerTopicInterest.topic_id).where(
+                    LearnerTopicInterest.learner_id == current_user.id
+                )
+            ).all()
+            if current_user
+            else []
+        )
 
         rec_clauses = []
         if interest_topics or target_category_id:
             topic_score = (
-                case((Course.topic_id.in_(interest_topics), 2), else_=0)
-                if interest_topics
-                else 0
+                case((Course.topic_id.in_(interest_topics), 2), else_=0) if interest_topics else 0
             )
             cat_score = (
                 case((Course.category_id == target_category_id, 1), else_=0)
