@@ -64,3 +64,64 @@ def test_b9_instructor_stats_all_cases(client: TestClient, db_session: Session):
     # [실패 2] 타인/미존재 강좌 ID 통계 요청 -> 404 NOT_FOUND
     res_stats_404 = client.get("/api/v1/instructor/stats?courseId=999999")
     assert res_stats_404.status_code == 404
+
+    # [실패 3] from > to 역전 날짜 입력 시 -> 400 VALIDATION_ERROR
+    res_rev_date = client.get("/api/v1/instructor/stats?from=2026-05-10&to=2026-05-01")
+    assert res_rev_date.status_code == 400
+    assert res_rev_date.json()["error"]["code"] == "VALIDATION_ERROR"
+
+    # [성공 3] 31일 날짜(2026-03-31) 기준 전월 동기(2026-02-28) 대비 증감 및 무실적 강좌 포함 검증
+    empty_course = Course(
+        instructor_id=6,
+        category_id=1,
+        topic_id=11,
+        title="무실적 강좌",
+        description="설명",
+        difficulty="BEGINNER",
+        price_krw=0,
+        status="PUBLISHED",
+        published_at=datetime(2026, 3, 15, tzinfo=timezone.utc),
+    )
+    db_session.add(empty_course)
+    db_session.flush()
+
+    db_session.add_all(
+        [
+            CourseDailyStat(
+                course_id=course.id,
+                start_date=date(2026, 2, 20),
+                lesson_views=50,
+                new_students=5,
+                expected_revenue=50000,
+                available_quiz_cnt=20,
+                first_submitted_cnt=10,  # 50%
+                first_answer_cnt=50,
+                first_correct_cnt=30,  # 60%
+            ),
+            CourseDailyStat(
+                course_id=course.id,
+                start_date=date(2026, 3, 25),
+                lesson_views=100,
+                new_students=10,
+                expected_revenue=100000,
+                available_quiz_cnt=20,
+                first_submitted_cnt=16,  # 80% (+30.0%p)
+                first_answer_cnt=50,
+                first_correct_cnt=40,  # 80% (+20.0%p)
+            ),
+        ]
+    )
+    db_session.commit()
+
+    res_march = client.get("/api/v1/instructor/stats?from=2026-03-01&to=2026-03-31")
+    assert res_march.status_code == 200
+    m_data = res_march.json()["data"]
+    assert m_data["period"] == {"from": "2026-03-01", "to": "2026-03-31", "groupBy": "day"}
+    comp = m_data["summary"]["comparison"]
+    assert comp["publishedCourseDiff"] == 2
+    assert comp["lessonViewsDiffPercent"] == 100.0
+    assert comp["quizResponseRateDiffPoint"] == 30.0
+    assert comp["quizCorrectRateDiffPoint"] == 20.0
+    assert m_data["dailyStats"] is not None
+    assert m_data["courseStats"] is not None
+    assert any(cs["courseId"] == empty_course.id for cs in m_data["courseStats"])

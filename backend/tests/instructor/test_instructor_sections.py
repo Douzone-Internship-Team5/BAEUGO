@@ -103,3 +103,25 @@ def test_b5_sections_all_cases(client: TestClient, db_session: Session):
 
     res_pub_del = client.delete(f"/api/v1/instructor/sections/{pub_sec.id}")
     assert res_pub_del.status_code == 409
+
+    # [실패 5] 공백 제목 / 150자 초과 제목 / sortOrder < 1 검증 -> 400 VALIDATION_ERROR
+    res_empty_title = client.post(
+        "/api/v1/instructor/sections",
+        json={"courseId": course.id, "title": "   "},
+    )
+    assert res_empty_title.status_code == 400
+    assert res_empty_title.json()["error"]["code"] == "VALIDATION_ERROR"
+
+    res_long_title = client.post(
+        "/api/v1/instructor/sections",
+        json={"courseId": course.id, "title": "가" * 151},
+    )
+    assert res_long_title.status_code == 400
+
+    sec2_id = res_sec2.json()["data"]["sectionId"]
+    res_bad_sort = client.patch(
+        f"/api/v1/instructor/sections/{sec2_id}",
+        json={"sortOrder": 0},
+    )
+    assert res_bad_sort.status_code == 400
+    assert res_bad_sort.json()["error"]["code"] == "VALIDATION_ERROR"

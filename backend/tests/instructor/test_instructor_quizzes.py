@@ -250,3 +250,107 @@ def test_question_order_negation_on_update(client: TestClient, db_session: Sessi
     assert preserved_q1 is not None
     assert preserved_q1.is_active is False
     assert preserved_q1.order_no == -int(old_q1_id)
+
+
+def test_b8_cross_course_section_and_question_record_preservation(
+    client: TestClient, db_session: Session
+):
+    from app.models.learning import QuestionRecord
+
+    c1 = Course(
+        instructor_id=6,
+        category_id=1,
+        topic_id=11,
+        title="퀴즈 강좌 1",
+        description="설명",
+        difficulty="BEGINNER",
+        price_krw=0,
+        status="DRAFT",
+    )
+    c2 = Course(
+        instructor_id=6,
+        category_id=1,
+        topic_id=11,
+        title="퀴즈 강좌 2",
+        description="설명",
+        difficulty="BEGINNER",
+        price_krw=0,
+        status="DRAFT",
+    )
+    db_session.add_all([c1, c2])
+    db_session.flush()
+
+    sec2 = Section(course_id=c2.id, title="강좌2 섹션", sort_order=1, is_active=True)
+    db_session.add(sec2)
+    db_session.flush()
+
+    # 강좌 1에 속하지 않는 강좌 2의 sectionId로 조회/수정/재생성 요청 시 404 NOT_FOUND
+    valid_payload = {
+        "questions": [
+            {
+                "content": f"문항 {i}",
+                "choices": ["1", "2", "3", "4"],
+                "correctChoiceNo": 1,
+                "explanation": "해설",
+            }
+            for i in range(1, 4)
+        ]
+    }
+    assert (
+        client.get(f"/api/v1/instructor/courses/{c1.id}/quiz?sectionId={sec2.id}").status_code
+        == 404
+    )
+    assert (
+        client.put(
+            f"/api/v1/instructor/courses/{c1.id}/quiz?sectionId={sec2.id}",
+            json=valid_payload,
+        ).status_code
+        == 404
+    )
+    assert (
+        client.post(
+            f"/api/v1/instructor/courses/{c1.id}/quiz/regenerate?sectionId={sec2.id}"
+        ).status_code
+        == 404
+    )
+
+    # QuestionRecord 이력이 있는 문항 보존 검증
+    quiz = Quiz(course_id=c1.id, quiz_type="FINAL", is_active=True)
+    db_session.add(quiz)
+    db_session.flush()
+
+    q_rec_target = Question(
+        quiz_id=quiz.id,
+        order_no=1,
+        generated_by="INSTRUCTOR",
+        content="오답노트 이력 문항",
+        explanation="해설",
+        correct_choice_no=1,
+        is_active=True,
+    )
+    db_session.add(q_rec_target)
+    db_session.flush()
+    for c_no in range(1, 5):
+        db_session.add(
+            QuestionChoice(question_id=q_rec_target.id, choice_no=c_no, content=f"보기 {c_no}")
+        )
+
+    db_session.add(
+        QuestionRecord(
+            learner_id=2,
+            question_id=q_rec_target.id,
+            status="REVIEW_NEEDED",
+            wrong_count=1,
+        )
+    )
+    db_session.commit()
+    target_qid = q_rec_target.id
+
+    res_put = client.put(f"/api/v1/instructor/courses/{c1.id}/quiz", json=valid_payload)
+    assert res_put.status_code == 200
+
+    db_session.expire_all()
+    preserved = db_session.get(Question, target_qid)
+    assert preserved is not None
+    assert preserved.is_active is False
+    assert preserved.order_no == -int(target_qid)

@@ -89,9 +89,16 @@ class Section(Base, TimestampMixin):
     videos: Mapped[list[Video]] = relationship(
         "Video", back_populates="section", cascade="all, delete-orphan", order_by="Video.sort_order"
     )
-    unit_quiz: Mapped[Quiz | None] = relationship(
-        "Quiz", back_populates="section", uselist=False, cascade="all, delete-orphan"
+    quizzes: Mapped[list[Quiz]] = relationship(
+        "Quiz", back_populates="section", cascade="all, delete-orphan"
     )
+
+    @property
+    def unit_quiz(self) -> Quiz | None:
+        return next(
+            (q for q in self.quizzes if q.quiz_type == "UNIT" and q.is_active),
+            None,
+        )
 
 
 class Video(Base, TimestampMixin):
@@ -162,7 +169,7 @@ class Quiz(Base, TimestampMixin):
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
 
     course: Mapped[Course] = relationship("Course", back_populates="quizzes")
-    section: Mapped[Section | None] = relationship("Section", back_populates="unit_quiz")
+    section: Mapped[Section | None] = relationship("Section", back_populates="quizzes")
     questions: Mapped[list[Question]] = relationship(
         "Question", back_populates="quiz", cascade="all, delete-orphan", order_by="Question.order_no"
     )

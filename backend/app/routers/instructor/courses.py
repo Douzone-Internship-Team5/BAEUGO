@@ -1,9 +1,9 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from typing import Annotated
+from typing import Annotated, Any
 
-from fastapi import APIRouter, Depends, File, Form, Query, UploadFile
+from fastapi import APIRouter, Depends, Query, Request, UploadFile
 from sqlalchemy import desc, func, select
 from sqlalchemy.orm import selectinload
 
@@ -13,8 +13,8 @@ from app.core.auth import (
 )
 from app.core.database import DbSession
 from app.core.errors import AppError
-from app.models.category import Topic
-from app.models.course import Course, Quiz, Section, Video
+from app.models.category import Category, Topic
+from app.models.course import Course, Question, Quiz, Section, Video
 from app.models.user import User
 from app.schemas.common import DataResponse
 from app.schemas.instructor import (
@@ -40,9 +40,28 @@ from app.services.course_service import (
 from app.services.storage import (
     get_thumbnail_url,
     save_upload_file,
+    validate_thumbnail_file,
 )
 
 router = APIRouter(tags=["instructor-courses"])
+
+VALID_DIFFICULTIES = {"BEGINNER", "INTERMEDIATE", "ADVANCED"}
+
+
+def _parse_int_field(val: Any, field_name: str) -> int:
+    if isinstance(val, bool) or val is None:
+        raise AppError(400, "VALIDATION_ERROR", f"{field_name} 값이 올바르지 않습니다.")
+    if isinstance(val, int):
+        return val
+    if isinstance(val, str):
+        s = val.strip()
+        if not s:
+            raise AppError(400, "VALIDATION_ERROR", f"{field_name} 값이 올바르지 않습니다.")
+        try:
+            return int(s)
+        except ValueError:
+            raise AppError(400, "VALIDATION_ERROR", f"{field_name} 값이 올바르지 않습니다.")
+    raise AppError(400, "VALIDATION_ERROR", f"{field_name} 값이 올바르지 않습니다.")
 
 
 # ==========================================
@@ -94,8 +113,15 @@ def list_my_courses(
 
     items: list[InstructorCourseItem] = []
     for c in courses:
-        section_cnt = sum(1 for s in c.sections if s.is_active)
-        video_cnt = sum(1 for v in c.videos if v.is_active and v.video_type == "LESSON")
+        active_sec_ids = {s.id for s in c.sections if s.is_active}
+        section_cnt = len(active_sec_ids)
+        video_cnt = sum(
+            1
+            for v in c.videos
+            if v.is_active
+            and v.video_type == "LESSON"
+            and (v.section_id is None or v.section_id in active_sec_ids)
+        )
         enrollment_cnt = len(c.enrollments)
         completed_proc, total_proc = calculate_course_processing(c)
 
@@ -139,7 +165,17 @@ def get_course_detail_for_edit(
     db: DbSession,
     current_user: Annotated[User, Depends(get_current_instructor)],
 ):
-    course = verify_course_ownership(courseId, current_user.id, db)
+    course = db.scalar(
+        select(Course)
+        .where(Course.id == courseId, Course.instructor_id == current_user.id)
+        .options(
+            selectinload(Course.videos),
+            selectinload(Course.sections).selectinload(Section.videos),
+            selectinload(Course.quizzes).selectinload(Quiz.questions).selectinload(Question.choices),
+        )
+    )
+    if not course:
+        raise AppError(404, "NOT_FOUND", "존재하지 않거나 접근 권한이 없는 강좌입니다.")
 
     # 활성 OT 영상
     ot_video_obj = next((v for v in course.videos if v.video_type == "OT" and v.is_active), None)
@@ -160,12 +196,12 @@ def get_course_detail_for_edit(
     # 섹션 및 영상 목록
     sections_dto: list[InstructorSectionDetail] = []
     total_lesson_duration = 0
-    for s in course.sections:
+    for s in sorted(course.sections, key=lambda x: (x.sort_order, x.id)):
         if not s.is_active:
             continue
 
         lesson_videos: list[InstructorVideoSummary] = []
-        for v in s.videos:
+        for v in sorted(s.videos, key=lambda x: (x.sort_order, x.id)):
             if not v.is_active or v.video_type != "LESSON":
                 continue
             total_lesson_duration += v.duration_seconds
@@ -181,9 +217,16 @@ def get_course_detail_for_edit(
                 )
             )
 
-        unit_quiz_obj = s.unit_quiz
+        unit_quiz_obj = next(
+            (
+                q
+                for q in course.quizzes
+                if q.section_id == s.id and q.quiz_type == "UNIT" and q.is_active
+            ),
+            None,
+        )
         unit_quiz_dto = None
-        if unit_quiz_obj and unit_quiz_obj.is_active:
+        if unit_quiz_obj:
             active_q_count = sum(1 for q in unit_quiz_obj.questions if q.is_active)
             unit_quiz_dto = InstructorUnitQuizSummary(
                 quiz_id=unit_quiz_obj.id,
@@ -248,39 +291,99 @@ def get_course_detail_for_edit(
 # [B-3] 강좌 생성 · 수정 · 초안 삭제
 # ==========================================
 @router.post("/courses", response_model=DataResponse[CourseMutationResponseData], status_code=201)
-def create_course(
+async def create_course(
+    request: Request,
     db: DbSession,
     current_user: Annotated[User, Depends(get_current_instructor)],
-    title: Annotated[str, Form(...)],
-    description: Annotated[str, Form(...)],
-    categoryId: Annotated[int, Form(...)],
-    topicId: Annotated[int, Form(...)],
-    difficulty: Annotated[str, Form(...)],
-    priceKrw: Annotated[int, Form()] = 0,
-    thumbnail: Annotated[UploadFile | None, File()] = None,
 ):
-    # topicId가 categoryId에 속하는지 검증
+    content_type = request.headers.get("content-type", "")
+    thumbnail: UploadFile | None = None
+
+    if "application/json" in content_type:
+        try:
+            body = await request.json()
+        except Exception:
+            raise AppError(400, "VALIDATION_ERROR", "입력값을 확인해 주세요.")
+        if not isinstance(body, dict):
+            raise AppError(400, "VALIDATION_ERROR", "입력값을 확인해 주세요.")
+        title_raw = body.get("title")
+        description_raw = body.get("description")
+        category_raw = body.get("categoryId", body.get("category_id"))
+        topic_raw = body.get("topicId", body.get("topic_id"))
+        difficulty_raw = body.get("difficulty")
+        price_raw = body.get("priceKrw", body.get("price_krw", 0))
+    else:
+        form = await request.form()
+        title_raw = form.get("title")
+        description_raw = form.get("description")
+        category_raw = form.get("categoryId", form.get("category_id"))
+        topic_raw = form.get("topicId", form.get("topic_id"))
+        difficulty_raw = form.get("difficulty")
+        price_raw = form.get("priceKrw", form.get("price_krw", 0))
+        thumb_val = form.get("thumbnail")
+        if isinstance(thumb_val, UploadFile) or hasattr(thumb_val, "filename"):
+            thumbnail = thumb_val  # type: ignore[assignment]
+
+    if (
+        title_raw is None
+        or description_raw is None
+        or category_raw is None
+        or topic_raw is None
+        or difficulty_raw is None
+    ):
+        raise AppError(400, "VALIDATION_ERROR", "입력값을 확인해 주세요.")
+
+    if not isinstance(title_raw, str) or not title_raw.strip() or len(title_raw) > 200:
+        raise AppError(400, "VALIDATION_ERROR", "강좌 제목은 1~200자 이내로 입력해 주세요.")
+    if not isinstance(description_raw, str) or not description_raw.strip():
+        raise AppError(400, "VALIDATION_ERROR", "강좌 소개를 입력해 주세요.")
+    if not isinstance(difficulty_raw, str) or difficulty_raw not in VALID_DIFFICULTIES:
+        raise AppError(400, "VALIDATION_ERROR", "유효하지 않은 난이도입니다.")
+
+    categoryId = _parse_int_field(category_raw, "categoryId")
+    topicId = _parse_int_field(topic_raw, "topicId")
+    priceKrw = 0 if (price_raw is None or price_raw == "") else _parse_int_field(price_raw, "priceKrw")
+
+    # categoryId 및 topicId 소속/활성 검증
+    category = db.get(Category, categoryId)
     topic = db.get(Topic, topicId)
-    if not topic or topic.category_id != categoryId:
-        raise AppError(400, "VALIDATION_ERROR", "선택한 주제가 해당 직무 카테고리에 속하지 않거나 가격 값이 올바르지 않습니다.")
+    if (
+        not category
+        or not category.is_active
+        or not topic
+        or not topic.is_active
+        or topic.category_id != categoryId
+    ):
+        raise AppError(
+            400,
+            "VALIDATION_ERROR",
+            "선택한 주제가 해당 직무 카테고리에 속하지 않거나 가격 값이 올바르지 않습니다.",
+        )
 
     if priceKrw < 0:
-        raise AppError(400, "VALIDATION_ERROR", "선택한 주제가 해당 직무 카테고리에 속하지 않거나 가격 값이 올바르지 않습니다.")
+        raise AppError(
+            400,
+            "VALIDATION_ERROR",
+            "선택한 주제가 해당 직무 카테고리에 속하지 않거나 가격 값이 올바르지 않습니다.",
+        )
+
+    if thumbnail is not None:
+        validate_thumbnail_file(thumbnail)
 
     course = Course(
         instructor_id=current_user.id,
         category_id=categoryId,
         topic_id=topicId,
-        title=title,
-        description=description,
-        difficulty=difficulty,
+        title=title_raw,
+        description=description_raw,
+        difficulty=difficulty_raw,
         price_krw=priceKrw,
         status="DRAFT",
     )
     db.add(course)
     db.flush()
 
-    if thumbnail:
+    if thumbnail is not None:
         storage_key = save_upload_file(thumbnail, f"courses/{course.id}", "thumb")
         course.thumbnail_storage_key = storage_key
 
@@ -303,17 +406,11 @@ def create_course(
 
 
 @router.patch("/courses/{courseId}", response_model=DataResponse[CourseMutationResponseData])
-def update_course(
+async def update_course(
     courseId: int,
+    request: Request,
     db: DbSession,
     current_user: Annotated[User, Depends(get_current_instructor)],
-    title: Annotated[str | None, Form()] = None,
-    description: Annotated[str | None, Form()] = None,
-    categoryId: Annotated[int | None, Form()] = None,
-    topicId: Annotated[int | None, Form()] = None,
-    difficulty: Annotated[str | None, Form()] = None,
-    priceKrw: Annotated[int | None, Form()] = None,
-    thumbnail: Annotated[UploadFile | None, File()] = None,
 ):
     course = verify_course_ownership(courseId, current_user.id, db)
 
@@ -324,31 +421,80 @@ def update_course(
             "수정은 DRAFT·EDITING 상태에서만 가능하며, 삭제는 공개된 적 없는 DRAFT 강좌만 가능합니다.",
         )
 
-    target_category_id = categoryId or course.category_id
-    if topicId is not None:
-        topic = db.get(Topic, topicId)
-        if not topic or topic.category_id != target_category_id:
+    content_type = request.headers.get("content-type", "")
+    thumbnail: UploadFile | None = None
+
+    if "application/json" in content_type:
+        try:
+            body = await request.json()
+        except Exception:
+            raise AppError(400, "VALIDATION_ERROR", "입력값을 확인해 주세요.")
+        if not isinstance(body, dict):
+            raise AppError(400, "VALIDATION_ERROR", "입력값을 확인해 주세요.")
+        title_raw = body.get("title")
+        description_raw = body.get("description")
+        category_raw = body.get("categoryId", body.get("category_id"))
+        topic_raw = body.get("topicId", body.get("topic_id"))
+        difficulty_raw = body.get("difficulty")
+        price_raw = body.get("priceKrw", body.get("price_krw"))
+    else:
+        form = await request.form()
+        title_raw = form.get("title")
+        description_raw = form.get("description")
+        category_raw = form.get("categoryId", form.get("category_id"))
+        topic_raw = form.get("topicId", form.get("topic_id"))
+        difficulty_raw = form.get("difficulty")
+        price_raw = form.get("priceKrw", form.get("price_krw"))
+        thumb_val = form.get("thumbnail")
+        if isinstance(thumb_val, UploadFile) or hasattr(thumb_val, "filename"):
+            thumbnail = thumb_val  # type: ignore[assignment]
+
+    categoryId = _parse_int_field(category_raw, "categoryId") if category_raw is not None else None
+    topicId = _parse_int_field(topic_raw, "topicId") if topic_raw is not None else None
+    priceKrw = _parse_int_field(price_raw, "priceKrw") if price_raw is not None else None
+
+    if categoryId is not None or topicId is not None:
+        target_category_id = categoryId if categoryId is not None else course.category_id
+        target_topic_id = topicId if topicId is not None else course.topic_id
+        category = db.get(Category, target_category_id)
+        topic = db.get(Topic, target_topic_id)
+        if (
+            not category
+            or not category.is_active
+            or not topic
+            or not topic.is_active
+            or topic.category_id != target_category_id
+        ):
             raise AppError(
                 400,
                 "VALIDATION_ERROR",
                 "선택한 주제가 해당 직무 카테고리에 속하지 않거나 가격 값이 올바르지 않습니다.",
             )
-        course.topic_id = topicId
+        course.category_id = target_category_id
+        course.topic_id = target_topic_id
 
-    if categoryId is not None:
-        course.category_id = categoryId
-    if title is not None:
-        course.title = title
-    if description is not None:
-        course.description = description
-    if difficulty is not None:
-        course.difficulty = difficulty
+    if title_raw is not None:
+        if not isinstance(title_raw, str) or not title_raw.strip() or len(title_raw) > 200:
+            raise AppError(400, "VALIDATION_ERROR", "강좌 제목은 1~200자 이내로 입력해 주세요.")
+        course.title = title_raw
+
+    if description_raw is not None:
+        if not isinstance(description_raw, str) or not description_raw.strip():
+            raise AppError(400, "VALIDATION_ERROR", "강좌 소개를 입력해 주세요.")
+        course.description = description_raw
+
+    if difficulty_raw is not None:
+        if not isinstance(difficulty_raw, str) or difficulty_raw not in VALID_DIFFICULTIES:
+            raise AppError(400, "VALIDATION_ERROR", "유효하지 않은 난이도입니다.")
+        course.difficulty = difficulty_raw
+
     if priceKrw is not None:
         if priceKrw < 0:
             raise AppError(400, "VALIDATION_ERROR", "가격 값이 올바르지 않습니다.")
         course.price_krw = priceKrw
 
-    if thumbnail:
+    if thumbnail is not None:
+        validate_thumbnail_file(thumbnail)
         storage_key = save_upload_file(thumbnail, f"courses/{course.id}", "thumb")
         course.thumbnail_storage_key = storage_key
 
@@ -403,7 +549,17 @@ def update_course_status(
     db: DbSession,
     current_user: Annotated[User, Depends(get_current_instructor)],
 ):
-    course = verify_course_ownership(courseId, current_user.id, db)
+    course = db.scalar(
+        select(Course)
+        .where(Course.id == courseId, Course.instructor_id == current_user.id)
+        .options(
+            selectinload(Course.videos),
+            selectinload(Course.sections).selectinload(Section.videos),
+            selectinload(Course.quizzes).selectinload(Quiz.questions).selectinload(Question.choices),
+        )
+    )
+    if not course:
+        raise AppError(404, "NOT_FOUND", "존재하지 않거나 접근 권한이 없는 강좌입니다.")
 
     if req.status == "PUBLISHED":
         if course.status not in ("DRAFT", "EDITING"):

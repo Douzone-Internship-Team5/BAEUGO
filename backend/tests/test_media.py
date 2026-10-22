@@ -98,6 +98,77 @@ def test_video_streaming(client: TestClient, db_session: Session):
         res_no_file = client.get(f"/api/v1/videos/{no_file_vid.id}/stream")
         assert res_no_file.status_code == 404
         assert res_no_file.json()["error"]["code"] == "NOT_FOUND"
+
+        # [M-1 권한 검증] LESSON 영상은 비로그인/미수강 학습자 접근 시 403 FORBIDDEN, 담당 강사/수강생은 200 OK
+        from app.models.learning import Enrollment
+
+        lesson_vid = Video(
+            course_id=course.id,
+            video_type="LESSON",
+            title="유료 학습 영상",
+            duration_seconds=120,
+            video_storage_key="test_stream.mp4",
+            is_active=True,
+        )
+        db_session.add(lesson_vid)
+        db_session.commit()
+
+        # 비로그인 요청 -> 403 FORBIDDEN
+        res_lesson_unauth = client.get(f"/api/v1/videos/{lesson_vid.id}/stream")
+        assert res_lesson_unauth.status_code == 403
+        assert res_lesson_unauth.json()["error"]["code"] == "FORBIDDEN"
+
+        # 미수강 학습자(id=2) 요청 -> 403 FORBIDDEN
+        res_lesson_unenrolled = client.get(
+            f"/api/v1/videos/{lesson_vid.id}/stream",
+            headers={"Authorization": "Bearer learner"},
+        )
+        assert res_lesson_unenrolled.status_code == 403
+        assert res_lesson_unenrolled.json()["error"]["code"] == "FORBIDDEN"
+
+        # 타 강사(id=99) 요청 -> 403 FORBIDDEN
+        from app.models.user import User
+
+        db_session.add(
+            User(
+                id=99,
+                email="inst99@baeugo.test",
+                password_hash="$2b$12$mockhash",
+                name="타강사",
+                account_type="MEMBER",
+                active_mode="INSTRUCTOR",
+                is_active=True,
+            )
+        )
+        db_session.commit()
+        res_other_inst = client.get(
+            f"/api/v1/videos/{lesson_vid.id}/stream",
+            headers={"Authorization": "Bearer user_99"},
+        )
+        assert res_other_inst.status_code == 403
+
+        # 운영자(id=1) 요청 -> 200 OK
+        res_operator = client.get(
+            f"/api/v1/videos/{lesson_vid.id}/stream",
+            headers={"Authorization": "Bearer operator"},
+        )
+        assert res_operator.status_code == 200
+
+        # 담당 강사(id=6) 요청 -> 200 OK
+        res_lesson_inst = client.get(
+            f"/api/v1/videos/{lesson_vid.id}/stream",
+            headers={"Authorization": "Bearer instructor"},
+        )
+        assert res_lesson_inst.status_code == 200
+
+        # 수강 등록 후 학습자(id=2) 요청 -> 200 OK
+        db_session.add(Enrollment(course_id=course.id, learner_id=2, status="IN_PROGRESS"))
+        db_session.commit()
+        res_lesson_enrolled = client.get(
+            f"/api/v1/videos/{lesson_vid.id}/stream",
+            headers={"Authorization": "Bearer learner"},
+        )
+        assert res_lesson_enrolled.status_code == 200
     finally:
         if vid_file_path.exists():
             vid_file_path.unlink()

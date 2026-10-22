@@ -1,8 +1,8 @@
-from sqlalchemy import select
+from sqlalchemy import select, text
 from sqlalchemy.orm import Session
 
 from app.models.category import Category, Topic
-from app.models.user import InstructorProfile, LearnerProfile, User
+from app.models.user import InstructorProfile, LearnerProfile, LearnerTopicInterest, User
 
 
 def seed_data(db: Session) -> None:
@@ -124,7 +124,29 @@ def seed_data(db: Session) -> None:
             )
             db.add(learner_profile)
 
+    # 목업 수강자 관심 주제(topic_id=11) 시드
+    existing_interest = db.scalar(
+        select(LearnerTopicInterest).where(
+            LearnerTopicInterest.learner_id == learner.id,
+            LearnerTopicInterest.topic_id == 11,
+        )
+    )
+    if not existing_interest:
+        db.add(LearnerTopicInterest(learner_id=learner.id, topic_id=11))
+
     db.commit()
+
+    # PostgreSQL 환경에서 명시적 ID 삽입 후 시퀀스 동기화
+    bind = db.get_bind()
+    if bind is not None and bind.dialect.name == "postgresql":
+        for table_name in ("categories", "topics", "users"):
+            db.execute(
+                text(
+                    f"SELECT setval(pg_get_serial_sequence('{table_name}', 'id'), "
+                    f"COALESCE((SELECT MAX(id) FROM {table_name}), 1), true)"
+                )
+            )
+        db.commit()
 
 
 if __name__ == "__main__":

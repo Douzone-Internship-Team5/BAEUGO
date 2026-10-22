@@ -12,7 +12,7 @@ from app.core.auth import (
 )
 from app.core.database import DbSession
 from app.core.errors import AppError
-from app.models.course import Section
+from app.models.course import Quiz, Section
 from app.models.user import User
 from app.schemas.common import DataResponse
 from app.schemas.instructor import (
@@ -36,6 +36,9 @@ def create_section(
     course = verify_course_ownership(req.course_id, current_user.id, db)
     if course.status not in ("DRAFT", "EDITING"):
         raise AppError(409, "CONFLICT", "DRAFT 또는 EDITING 상태인 강좌에서만 섹션을 편집할 수 있습니다.")
+
+    if not req.title or not req.title.strip() or len(req.title) > 150:
+        raise AppError(400, "VALIDATION_ERROR", "섹션 제목은 1~150자 이내로 입력해 주세요.")
 
     # sort_order 자동 배정 (마지막 + 1)
     max_order = db.scalar(
@@ -77,8 +80,12 @@ def update_section(
         raise AppError(409, "CONFLICT", "DRAFT 또는 EDITING 상태인 강좌에서만 섹션을 편집할 수 있습니다.")
 
     if req.title is not None:
+        if not req.title.strip() or len(req.title) > 150:
+            raise AppError(400, "VALIDATION_ERROR", "섹션 제목은 1~150자 이내로 입력해 주세요.")
         section.title = req.title
     if req.sort_order is not None:
+        if req.sort_order < 1:
+            raise AppError(400, "VALIDATION_ERROR", "섹션 정렬 순서(sortOrder)는 1 이상이어야 합니다.")
         section.sort_order = req.sort_order
 
     db.commit()
@@ -110,14 +117,17 @@ def delete_section(
     section.is_active = False
     for v in section.videos:
         v.is_active = False
-    if section.unit_quiz:
-        section.unit_quiz.is_active = False
+    active_quizzes = db.scalars(
+        select(Quiz).where(Quiz.section_id == section.id, Quiz.is_active.is_(True))
+    ).all()
+    for q in active_quizzes:
+        q.is_active = False
 
     db.commit()
     return DataResponse(
         data=SectionResponseData(
             section_id=section.id,
             course_id=section.course_id,
-            isActive=False,
+            is_active=False,
         )
     )

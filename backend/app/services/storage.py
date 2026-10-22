@@ -6,6 +6,38 @@ from uuid import uuid4
 from fastapi import UploadFile
 
 from app.core.config import get_settings
+from app.core.errors import AppError
+
+MAX_VIDEO_SIZE = 200 * 1024 * 1024
+ALLOWED_THUMBNAIL_EXTENSIONS = {".jpg", ".jpeg", ".png"}
+ALLOWED_VIDEO_EXTENSIONS = {".mp4", ".mov", ".webm", ".avi", ".mkv"}
+
+
+def _get_upload_file_size(file: UploadFile) -> int:
+    if file.size is not None:
+        return file.size
+    file.file.seek(0, os.SEEK_END)
+    size = file.file.tell()
+    file.file.seek(0)
+    return size
+
+
+def validate_thumbnail_file(file: UploadFile) -> None:
+    ext = Path(file.filename or "").suffix.lower()
+    if ext not in ALLOWED_THUMBNAIL_EXTENSIONS:
+        raise AppError(400, "INVALID_FILE", "지원하지 않는 썸네일 이미지 형식입니다.")
+    size = _get_upload_file_size(file)
+    if size <= 0:
+        raise AppError(400, "INVALID_FILE", "빈 이미지 파일은 업로드할 수 없습니다.")
+
+
+def validate_video_file(file: UploadFile) -> None:
+    ext = Path(file.filename or "").suffix.lower()
+    if ext not in ALLOWED_VIDEO_EXTENSIONS:
+        raise AppError(400, "INVALID_FILE", "재생할 수 없거나 200MB를 초과한 영상 파일입니다.")
+    size = _get_upload_file_size(file)
+    if size <= 0 or size > MAX_VIDEO_SIZE:
+        raise AppError(400, "INVALID_FILE", "재생할 수 없거나 200MB를 초과한 영상 파일입니다.")
 
 
 def get_media_dir() -> Path:

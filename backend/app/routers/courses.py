@@ -60,13 +60,13 @@ def search_courses(
             )
         )
 
-    if categoryId:
+    if categoryId is not None:
         query = query.where(Course.category_id == categoryId)
 
-    if topicId:
+    if topicId is not None:
         query = query.where(Course.topic_id == topicId)
 
-    if difficulty:
+    if difficulty is not None:
         query = query.where(Course.difficulty == difficulty)
 
     if price == "free":

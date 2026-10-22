@@ -14,7 +14,7 @@ from app.core.auth import (
 from app.core.database import DbSession
 from app.core.errors import AppError
 from app.models.course import Question, QuestionChoice, Quiz
-from app.models.learning import AttemptQuestion
+from app.models.learning import AttemptQuestion, QuestionRecord
 from app.models.user import User
 from app.schemas.common import DataResponse
 from app.schemas.instructor import (
@@ -40,7 +40,7 @@ def get_quiz_detail(
     course = verify_course_ownership(courseId, current_user.id, db)
 
     if sectionId is not None:
-        verify_section_ownership(sectionId, current_user.id, db)
+        verify_section_ownership(sectionId, current_user.id, db, course_id=course.id)
         quiz = db.scalar(
             select(Quiz).where(
                 Quiz.course_id == course.id,
@@ -104,7 +104,7 @@ def update_quiz(
     if course.status not in ("DRAFT", "EDITING"):
         raise AppError(409, "CONFLICT", "DRAFT 또는 EDITING 상태인 강좌에서만 퀴즈를 수정하거나 재생성할 수 있습니다.")
 
-    # 3~5문항, 문항당 보기 4개, 정답 1~4 검증
+    # 3~5문항, 문항당 보기 4개, 정답 1~4 및 공백 검증
     if len(req.questions) < 3 or len(req.questions) > 5:
         raise AppError(
             400,
@@ -112,7 +112,15 @@ def update_quiz(
             "퀴즈는 3~5문항이어야 하며, 각 문항의 보기(choices)는 정확히 4개, 정답 번호(correctChoiceNo)는 1~4여야 합니다.",
         )
     for q_item in req.questions:
-        if len(q_item.choices) != 4 or q_item.correct_choice_no not in (1, 2, 3, 4):
+        if (
+            not q_item.content
+            or not q_item.content.strip()
+            or not q_item.explanation
+            or not q_item.explanation.strip()
+            or len(q_item.choices) != 4
+            or any(not c or not c.strip() for c in q_item.choices)
+            or q_item.correct_choice_no not in (1, 2, 3, 4)
+        ):
             raise AppError(
                 400,
                 "VALIDATION_ERROR",
@@ -121,7 +129,7 @@ def update_quiz(
 
     # 퀴즈 조회 또는 생성
     if sectionId is not None:
-        verify_section_ownership(sectionId, current_user.id, db)
+        verify_section_ownership(sectionId, current_user.id, db, course_id=course.id)
         quiz = db.scalar(
             select(Quiz).where(
                 Quiz.course_id == course.id,
@@ -161,15 +169,21 @@ def update_quiz(
             db.flush()
 
     # (치명적 제약조건 방어)
-    # 기존 활성 문항 중 수강생 제출 이력(attempt_questions)이 있는 문항은 is_active=False 및 order_no = -id 로 음수화하여 보존!
+    # 기존 문항 중 수강생 제출 이력(attempt_questions) 또는 오답노트 이력(question_records)이 있는 문항은
+    # is_active=False 및 order_no = -id 로 음수화하여 보존!
     existing_questions = list(quiz.questions)
     for old_q in existing_questions:
         if not old_q.is_active:
+            if old_q.order_no > 0:
+                old_q.order_no = -int(old_q.id)
             continue
         has_attempts = db.scalar(
             select(func.count(AttemptQuestion.id)).where(AttemptQuestion.question_id == old_q.id)
         )
-        if has_attempts and has_attempts > 0:
+        has_records = db.scalar(
+            select(func.count(QuestionRecord.id)).where(QuestionRecord.question_id == old_q.id)
+        )
+        if (has_attempts and has_attempts > 0) or (has_records and has_records > 0):
             old_q.is_active = False
             old_q.order_no = -int(old_q.id)
         else:
@@ -248,7 +262,7 @@ def regenerate_unit_quiz(
     if course.status not in ("DRAFT", "EDITING"):
         raise AppError(409, "CONFLICT", "DRAFT 또는 EDITING 상태인 강좌에서만 퀴즈를 수정하거나 재생성할 수 있습니다.")
 
-    verify_section_ownership(sectionId, current_user.id, db)
+    verify_section_ownership(sectionId, current_user.id, db, course_id=course.id)
     quiz = db.scalar(
         select(Quiz).where(
             Quiz.course_id == course.id,

@@ -253,3 +253,165 @@ def test_b7_scripts_all_cases(client: TestClient, db_session: Session):
 
     res_pub_regen = client.post(f"/api/v1/instructor/videos/{pub_vid.id}/script/regenerate")
     assert res_pub_regen.status_code == 409
+
+    # [추가 검증] B-7: seq < 1, 중복 seq, startMs < 0, 빈 content 거부 및 seq 정렬 반환
+    res_seq_zero = client.put(
+        f"/api/v1/instructor/videos/{video.id}/script",
+        json={"segments": [{"seq": 0, "startMs": 0, "endMs": 1000, "content": "오류"}]},
+    )
+    assert res_seq_zero.status_code == 400
+
+    res_dup_seq = client.put(
+        f"/api/v1/instructor/videos/{video.id}/script",
+        json={
+            "segments": [
+                {"seq": 1, "startMs": 0, "endMs": 1000, "content": "첫번째"},
+                {"seq": 1, "startMs": 1000, "endMs": 2000, "content": "중복 순번"},
+            ]
+        },
+    )
+    assert res_dup_seq.status_code == 400
+
+    res_neg_start = client.put(
+        f"/api/v1/instructor/videos/{video.id}/script",
+        json={"segments": [{"seq": 1, "startMs": -100, "endMs": 1000, "content": "음수 시작"}]},
+    )
+    assert res_neg_start.status_code == 400
+
+    res_empty_content = client.put(
+        f"/api/v1/instructor/videos/{video.id}/script",
+        json={"segments": [{"seq": 1, "startMs": 0, "endMs": 1000, "content": "   "}]},
+    )
+    assert res_empty_content.status_code == 400
+
+    res_unsorted = client.put(
+        f"/api/v1/instructor/videos/{video.id}/script",
+        json={
+            "segments": [
+                {"seq": 2, "startMs": 1000, "endMs": 2000, "content": "두번째"},
+                {"seq": 1, "startMs": 0, "endMs": 1000, "content": "첫번째"},
+            ]
+        },
+    )
+    assert res_unsorted.status_code == 200
+    assert [s["seq"] for s in res_unsorted.json()["data"]["segments"]] == [1, 2]
+
+
+def test_b6_cross_section_unit_quiz_auto_create_and_json_patch(
+    client: TestClient, db_session: Session
+):
+    from sqlalchemy import select
+    from app.models.course import Quiz
+
+    c1 = Course(
+        instructor_id=6,
+        category_id=1,
+        topic_id=11,
+        title="강좌 1",
+        description="설명",
+        difficulty="BEGINNER",
+        price_krw=0,
+        status="DRAFT",
+    )
+    c2 = Course(
+        instructor_id=6,
+        category_id=1,
+        topic_id=11,
+        title="강좌 2",
+        description="설명",
+        difficulty="BEGINNER",
+        price_krw=0,
+        status="DRAFT",
+    )
+    db_session.add_all([c1, c2])
+    db_session.flush()
+
+    sec1 = Section(course_id=c1.id, title="강좌1 섹션", sort_order=1, is_active=True)
+    sec2 = Section(course_id=c2.id, title="강좌2 섹션", sort_order=1, is_active=True)
+    db_session.add_all([sec1, sec2])
+    db_session.commit()
+
+    # [실패] 강좌 1에 강좌 2의 sectionId로 영상 업로드 시도 -> 404 NOT_FOUND
+    res_cross = client.post(
+        "/api/v1/instructor/videos",
+        data={
+            "courseId": c1.id,
+            "videoType": "LESSON",
+            "sectionId": sec2.id,
+            "title": "교차 참조 영상",
+        },
+        files={"file": ("v.mp4", io.BytesIO(b"video bytes"), "video/mp4")},
+    )
+    assert res_cross.status_code == 404
+
+    # [성공] LESSON 영상 업로드 시 섹션 단위 퀴즈(UNIT) 자동 생성 확인
+    res_lesson = client.post(
+        "/api/v1/instructor/videos",
+        data={
+            "courseId": c1.id,
+            "videoType": "LESSON",
+            "sectionId": sec1.id,
+            "title": "정상 학습 영상",
+        },
+        files={"file": ("lesson.mp4", io.BytesIO(b"video bytes"), "video/mp4")},
+    )
+    assert res_lesson.status_code == 201
+    vid_id = res_lesson.json()["data"]["videoId"]
+
+    unit_quiz = db_session.scalar(
+        select(Quiz).where(Quiz.section_id == sec1.id, Quiz.quiz_type == "UNIT", Quiz.is_active.is_(True))
+    )
+    assert unit_quiz is not None
+    assert unit_quiz.ai_status == "PENDING"
+
+    # [성공] PATCH application/json으로 영상 제목 및 정렬 순서 수정
+    res_json_patch = client.patch(
+        f"/api/v1/instructor/videos/{vid_id}",
+        json={"title": "JSON으로 수정한 영상 제목", "sortOrder": 3},
+    )
+    assert res_json_patch.status_code == 200
+    assert res_json_patch.json()["data"]["title"] == "JSON으로 수정한 영상 제목"
+    assert res_json_patch.json()["data"]["sortOrder"] == 3
+
+    # [실패] LESSON 영상의 sortOrder=0 또는 float 입력 시 400 VALIDATION_ERROR
+    assert (
+        client.patch(f"/api/v1/instructor/videos/{vid_id}", json={"sortOrder": 0}).status_code
+        == 400
+    )
+    assert (
+        client.patch(f"/api/v1/instructor/videos/{vid_id}", json={"sortOrder": 1.5}).status_code
+        == 400
+    )
+
+    # [성공] PATCH 파일 교체 시 기존 COMPLETED 단위 퀴즈가 PENDING으로 초기화되는지 확인
+    unit_quiz.ai_status = "COMPLETED"
+    unit_quiz.reviewed_at = datetime.now(timezone.utc)
+    db_session.commit()
+
+    res_replace_vid = client.patch(
+        f"/api/v1/instructor/videos/{vid_id}",
+        files={"file": ("replaced.mp4", io.BytesIO(b"new video bytes"), "video/mp4")},
+    )
+    assert res_replace_vid.status_code == 200
+    new_vid_id = res_replace_vid.json()["data"]["videoId"]
+    assert new_vid_id != vid_id
+    db_session.expire_all()
+    refreshed_quiz = db_session.get(Quiz, unit_quiz.id)
+    assert refreshed_quiz.ai_status == "PENDING"
+    assert refreshed_quiz.reviewed_at is None
+
+    # [실패] 빈 영상 파일(0 byte) 또는 잘못된 확장자 업로드 시 -> 400 INVALID_FILE
+    res_empty_vid = client.post(
+        "/api/v1/instructor/videos",
+        data={"courseId": c1.id, "videoType": "OT", "title": "빈 영상"},
+        files={"file": ("empty.mp4", io.BytesIO(b""), "video/mp4")},
+    )
+    assert res_empty_vid.status_code == 400
+    assert res_empty_vid.json()["error"]["code"] == "INVALID_FILE"
+
+    res_bad_ext = client.patch(
+        f"/api/v1/instructor/videos/{new_vid_id}",
+        files={"file": ("bad.txt", io.BytesIO(b"not video"), "text/plain")},
+    )
+    assert res_bad_ext.status_code == 400
+    assert res_bad_ext.json()["error"]["code"] == "INVALID_FILE"

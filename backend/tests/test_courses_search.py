@@ -46,10 +46,18 @@ def test_course_search_all_cases(client: TestClient, db_session: Session):
     assert res_paid.status_code == 200
     assert all(c["isFree"] is False for c in res_paid.json()["data"]["items"])
 
-    # [성공 3] 카테고리 / 토픽 필터링
+    # [성공 3] 카테고리 / 토픽 필터링 (categoryId=0, topicId=0 포함)
     res_cat = client.get(f"/api/v1/courses?categoryId={c_free.category_id}")
     assert res_cat.status_code == 200
     assert any(c["courseId"] == c_free.id for c in res_cat.json()["data"]["items"])
+
+    res_cat_zero = client.get("/api/v1/courses?categoryId=0")
+    assert res_cat_zero.status_code == 200
+    assert res_cat_zero.json()["data"]["total"] == 0
+
+    res_topic_zero = client.get("/api/v1/courses?topicId=0")
+    assert res_topic_zero.status_code == 200
+    assert res_topic_zero.json()["data"]["total"] == 0
 
     # [성공 4] 난이도 필터 및 정렬 (sort=difficulty, latest, popular)
     res_diff = client.get("/api/v1/courses?sort=difficulty")

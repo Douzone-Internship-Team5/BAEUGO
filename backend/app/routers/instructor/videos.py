@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, File, Form, UploadFile
+from fastapi import APIRouter, Depends, File, Form, Request, UploadFile
 from sqlalchemy import delete, func, select
 
 from app.core.auth import (
@@ -24,7 +24,11 @@ from app.schemas.instructor import (
     ScriptUpdateRequest,
     VideoResponseData,
 )
-from app.services.storage import save_upload_file
+from app.services.storage import (
+    save_upload_file,
+    validate_thumbnail_file,
+    validate_video_file,
+)
 
 router = APIRouter(tags=["instructor-videos"])
 
@@ -50,16 +54,18 @@ def upload_video(
     if videoType not in ("OT", "LESSON"):
         raise AppError(400, "VALIDATION_ERROR", "영상 유형은 OT 또는 LESSON이어야 합니다.")
 
+    if not title or not title.strip() or len(title) > 200:
+        raise AppError(400, "VALIDATION_ERROR", "영상 제목은 1~200자 이내로 입력해 주세요.")
+
     if videoType == "LESSON" and sectionId is None:
         raise AppError(400, "VALIDATION_ERROR", "학습 영상(LESSON)은 sectionId가 필수입니다.")
 
-    # 영상 파일 최대 200MB 검증
-    MAX_VIDEO_SIZE = 200 * 1024 * 1024
-    if file.size and file.size > MAX_VIDEO_SIZE:
-        raise AppError(400, "INVALID_FILE", "재생할 수 없거나 200MB를 초과한 영상 파일입니다.")
+    validate_video_file(file)
+    if thumbnail is not None:
+        validate_thumbnail_file(thumbnail)
 
     if sectionId is not None:
-        verify_section_ownership(sectionId, current_user.id, db)
+        verify_section_ownership(sectionId, current_user.id, db, course_id=course.id)
 
     # OT는 강좌당 활성 1개만 유지: 새 OT 등록 시 기존 OT is_active = False
     if videoType == "OT":
@@ -86,7 +92,7 @@ def upload_video(
     # 파일 저장
     video_key = save_upload_file(file, f"courses/{course.id}/videos", "video")
     thumb_key = None
-    if thumbnail:
+    if thumbnail is not None:
         thumb_key = save_upload_file(thumbnail, f"courses/{course.id}/videos", "vthumb")
 
     video = Video(
@@ -104,7 +110,7 @@ def upload_video(
     )
     db.add(video)
 
-    # 섹션 단위 퀴즈 재생성 연동
+    # 섹션 단위 퀴즈 자동 생성 및 재생성 연동
     if videoType == "LESSON" and sectionId is not None:
         unit_quiz = db.scalar(
             select(Quiz).where(
@@ -116,6 +122,17 @@ def upload_video(
         if unit_quiz:
             unit_quiz.ai_status = "PENDING"
             unit_quiz.reviewed_at = None
+        else:
+            db.add(
+                Quiz(
+                    course_id=course.id,
+                    section_id=sectionId,
+                    quiz_type="UNIT",
+                    ai_status="PENDING",
+                    reviewed_at=None,
+                    is_active=True,
+                )
+            )
 
     db.commit()
     db.refresh(video)
@@ -137,19 +154,78 @@ def upload_video(
 
 
 @router.patch("/videos/{videoId}", response_model=DataResponse[VideoResponseData])
-def update_or_replace_video(
+async def update_or_replace_video(
     videoId: int,
+    request: Request,
     db: DbSession,
     current_user: Annotated[User, Depends(get_current_instructor)],
-    title: Annotated[str | None, Form()] = None,
-    sortOrder: Annotated[int | None, Form()] = None,
-    file: Annotated[UploadFile | None, File()] = None,
-    thumbnail: Annotated[UploadFile | None, File()] = None,
 ):
     video = verify_video_ownership(videoId, current_user.id, db)
     course = video.course
     if course.status not in ("DRAFT", "EDITING"):
         raise AppError(409, "CONFLICT", "DRAFT 또는 EDITING 상태인 강좌에서만 영상을 편집할 수 있습니다.")
+
+    content_type = request.headers.get("content-type", "")
+    title: str | None = None
+    sortOrder: int | None = None
+    file: UploadFile | None = None
+    thumbnail: UploadFile | None = None
+
+    if "application/json" in content_type:
+        try:
+            body = await request.json()
+        except Exception:
+            raise AppError(400, "VALIDATION_ERROR", "입력값을 확인해 주세요.")
+        if not isinstance(body, dict):
+            raise AppError(400, "VALIDATION_ERROR", "입력값을 확인해 주세요.")
+        if "title" in body and body["title"] is not None:
+            if not isinstance(body["title"], str):
+                raise AppError(400, "VALIDATION_ERROR", "영상 제목 형식이 올바르지 않습니다.")
+            title = body["title"]
+        raw_sort = body.get("sortOrder", body.get("sort_order"))
+        if raw_sort is not None:
+            if isinstance(raw_sort, bool):
+                raise AppError(400, "VALIDATION_ERROR", "정렬 순서 값이 올바르지 않습니다.")
+            if isinstance(raw_sort, int):
+                sortOrder = raw_sort
+            elif isinstance(raw_sort, str):
+                try:
+                    sortOrder = int(raw_sort.strip())
+                except ValueError:
+                    raise AppError(400, "VALIDATION_ERROR", "정렬 순서 값이 올바르지 않습니다.")
+            else:
+                raise AppError(400, "VALIDATION_ERROR", "정렬 순서 값이 올바르지 않습니다.")
+    else:
+        form = await request.form()
+        if "title" in form and form.get("title") is not None:
+            title_val = form.get("title")
+            if isinstance(title_val, str):
+                title = title_val
+        raw_sort = form.get("sortOrder", form.get("sort_order"))
+        if raw_sort is not None and raw_sort != "":
+            try:
+                sortOrder = int(str(raw_sort).strip())
+            except (ValueError, TypeError):
+                raise AppError(400, "VALIDATION_ERROR", "정렬 순서 값이 올바르지 않습니다.")
+        file_val = form.get("file")
+        if isinstance(file_val, UploadFile) or hasattr(file_val, "filename"):
+            file = file_val  # type: ignore[assignment]
+        thumb_val = form.get("thumbnail")
+        if isinstance(thumb_val, UploadFile) or hasattr(thumb_val, "filename"):
+            thumbnail = thumb_val  # type: ignore[assignment]
+
+    if title is not None:
+        if not title.strip() or len(title) > 200:
+            raise AppError(400, "VALIDATION_ERROR", "영상 제목은 1~200자 이내로 입력해 주세요.")
+
+    if sortOrder is not None:
+        if (video.video_type == "LESSON" and sortOrder < 1) or sortOrder < 0:
+            raise AppError(400, "VALIDATION_ERROR", "정렬 순서(sortOrder) 값이 올바르지 않습니다.")
+
+    if file is not None:
+        validate_video_file(file)
+    if thumbnail is not None:
+        validate_thumbnail_file(thumbnail)
 
     # 파일이 제공된 경우: 새 videoId 행 생성 규칙 적용!
     if file is not None:
@@ -164,7 +240,7 @@ def update_or_replace_video(
             course_id=video.course_id,
             section_id=video.section_id,
             video_type=video.video_type,
-            title=title or video.title,
+            title=title if title is not None else video.title,
             duration_seconds=video.duration_seconds,
             sort_order=sortOrder if sortOrder is not None else video.sort_order,
             video_storage_key=new_video_key,
@@ -175,8 +251,8 @@ def update_or_replace_video(
         )
         db.add(new_video)
 
-        # 단위 퀴즈 재생성 연동
-        if video.section_id:
+        # 단위 퀴즈 자동 생성 및 재생성 연동
+        if video.video_type == "LESSON" and video.section_id is not None:
             unit_quiz = db.scalar(
                 select(Quiz).where(
                     Quiz.section_id == video.section_id,
@@ -187,6 +263,17 @@ def update_or_replace_video(
             if unit_quiz:
                 unit_quiz.ai_status = "PENDING"
                 unit_quiz.reviewed_at = None
+            else:
+                db.add(
+                    Quiz(
+                        course_id=course.id,
+                        section_id=video.section_id,
+                        quiz_type="UNIT",
+                        ai_status="PENDING",
+                        reviewed_at=None,
+                        is_active=True,
+                    )
+                )
 
         db.commit()
         db.refresh(new_video)
@@ -298,14 +385,26 @@ def update_video_script(
     if course.status not in ("DRAFT", "EDITING"):
         raise AppError(409, "CONFLICT", "DRAFT 또는 EDITING 상태인 강좌에서만 대본을 수정하거나 재생성할 수 있습니다.")
 
-    # end_ms > start_ms 검증
+    seen_seqs: set[int] = set()
     for seg in req.segments:
+        if seg.seq < 1:
+            raise AppError(400, "VALIDATION_ERROR", "자막 순번(seq)은 1 이상이어야 합니다.")
+        if seg.seq in seen_seqs:
+            raise AppError(400, "VALIDATION_ERROR", "중복된 자막 순번(seq)이 존재합니다.")
+        seen_seqs.add(seg.seq)
+        if seg.start_ms < 0:
+            raise AppError(400, "VALIDATION_ERROR", "자막 시작 시점(startMs)은 0 이상이어야 합니다.")
         if seg.end_ms <= seg.start_ms:
             raise AppError(400, "VALIDATION_ERROR", "자막 종료 시점(endMs)은 시작 시점(startMs)보다 커야 합니다.")
+        if not seg.content or not seg.content.strip():
+            raise AppError(400, "VALIDATION_ERROR", "자막 내용(content)은 비어 있을 수 없습니다.")
+
+    sorted_segments = sorted(req.segments, key=lambda x: x.seq)
 
     # 기존 자막 삭제 후 교체
     db.execute(delete(VideoScript).where(VideoScript.video_id == video.id))
-    for seg in req.segments:
+    db.flush()
+    for seg in sorted_segments:
         db.add(
             VideoScript(
                 video_id=video.id,
@@ -328,7 +427,7 @@ def update_video_script(
             video_id=video.id,
             stt_status=video.stt_status,
             transcript_reviewed_at=video.transcript_reviewed_at,
-            segments=req.segments,
+            segments=sorted_segments,
         )
     )
 

@@ -1,12 +1,12 @@
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from datetime import datetime, timezone
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.models.course import Course, Question, QuestionChoice, Quiz, Section, Video
-from app.models.learning import Enrollment, QuizAttempt, VideoProgress
+from app.models.learning import Enrollment, QuestionRecord, QuizAttempt, VideoProgress
 
 
 def validate_publish_readiness(course: Course, db: Session) -> tuple[bool, list[str]]:
@@ -28,6 +28,7 @@ def validate_publish_readiness(course: Course, db: Session) -> tuple[bool, list[
 
     # 2. 활성 섹션 최소 1개 및 각 섹션별 활성 학습 영상 1개 이상
     active_sections = [s for s in course.sections if s.is_active]
+    active_section_ids = {s.id for s in active_sections}
     if not active_sections:
         missing.append("SECTION_MISSING")
     else:
@@ -37,15 +38,26 @@ def validate_publish_readiness(course: Course, db: Session) -> tuple[bool, list[
                 missing.append(f"LESSON_VIDEO_MISSING:sectionId={s.id}")
 
     # 3. 모든 활성 영상(OT 포함)의 STT 및 검수 완료
-    active_videos = [v for v in course.videos if v.is_active]
+    active_videos = [
+        v
+        for v in course.videos
+        if v.is_active and (v.section_id is None or v.section_id in active_section_ids)
+    ]
     for v in active_videos:
         if v.stt_status != "COMPLETED" or v.transcript_reviewed_at is None:
             missing.append(f"TRANSCRIPT_NOT_REVIEWED:videoId={v.id}")
 
-    # 4. 활성 섹션마다 단위 퀴즈 AI 완료 및 강사 검수 완료
+    # 4. 활성 섹션마다 단위 퀴즈 AI 완료 및 강사 검수 완료 (s.unit_quiz 다중 행 매핑 오류 방지)
     for s in active_sections:
-        unit_quiz = s.unit_quiz
-        if not unit_quiz or not unit_quiz.is_active:
+        unit_quiz = next(
+            (
+                q
+                for q in course.quizzes
+                if q.section_id == s.id and q.quiz_type == "UNIT" and q.is_active
+            ),
+            None,
+        )
+        if not unit_quiz:
             missing.append(f"UNIT_QUIZ_MISSING:sectionId={s.id}")
         else:
             if unit_quiz.ai_status != "COMPLETED" or unit_quiz.reviewed_at is None:
@@ -61,7 +73,11 @@ def validate_publish_readiness(course: Course, db: Session) -> tuple[bool, list[
                 missing.append("FINAL_QUIZ_NOT_REVIEWED")
 
     # 6. 모든 활성 퀴즈당 활성 문항 3~5개 및 보기 정확히 4개
-    all_active_quizzes = [q for q in course.quizzes if q.is_active]
+    all_active_quizzes = [
+        q
+        for q in course.quizzes
+        if q.is_active and (q.section_id is None or q.section_id in active_section_ids)
+    ]
     for q in all_active_quizzes:
         active_questions = [quest for quest in q.questions if quest.is_active]
         if len(active_questions) < 3 or len(active_questions) > 5:
@@ -79,11 +95,24 @@ def validate_publish_readiness(course: Course, db: Session) -> tuple[bool, list[
 def recalculate_enrollments_progress(course: Course, db: Session) -> None:
     """재공개 시 기존 수강생의 활성 항목 기준 이수율을 재계산한다.
 
-    활성 이수율이 100% 미만이 된 경우 enrollments.status = 'IN_PROGRESS',
-    current_completed_at = NULL 로 갱신하되 first_completed_at 은 보존.
+    - 활성 이수율이 100% 미만이거나 미해결 오답(REVIEW_NEEDED)이 있는 경우:
+      enrollments.status = 'IN_PROGRESS', current_completed_at = NULL (first_completed_at 보존)
+    - 영상/퀴즈 비활성화로 인해 활성 이수율 100% 및 미해결 오답 0개를 달성한 경우:
+      enrollments.status = 'COMPLETED', current_completed_at = NOW() 갱신
     """
-    active_lessons = [v for v in course.videos if v.video_type == "LESSON" and v.is_active]
-    active_quizzes = [q for q in course.quizzes if q.is_active]
+    active_section_ids = {s.id for s in course.sections if s.is_active}
+    active_lessons = [
+        v
+        for v in course.videos
+        if v.video_type == "LESSON"
+        and v.is_active
+        and (v.section_id is None or v.section_id in active_section_ids)
+    ]
+    active_quizzes = [
+        q
+        for q in course.quizzes
+        if q.is_active and (q.section_id is None or q.section_id in active_section_ids)
+    ]
 
     total_items_count = len(active_lessons) + len(active_quizzes)
     if total_items_count == 0:
@@ -91,6 +120,12 @@ def recalculate_enrollments_progress(course: Course, db: Session) -> None:
 
     active_lesson_ids = {v.id for v in active_lessons}
     active_quiz_ids = {q.id for q in active_quizzes}
+    active_question_ids = {
+        quest.id
+        for q in active_quizzes
+        for quest in q.questions
+        if quest.is_active
+    }
 
     enrollments = db.scalars(
         select(Enrollment).where(Enrollment.course_id == course.id)
@@ -129,22 +164,57 @@ def recalculate_enrollments_progress(course: Course, db: Session) -> None:
         ).all()
         quiz_counts = {lid: cnt for lid, cnt in raw_quiz_counts}
 
-    # 3. 인메모리 매핑으로 상태 일괄 갱신 (반복 쿼리 제거)
+    # 3. 수강생별 활성 문항 중 미해결 오답(REVIEW_NEEDED) 개수 일괄 집계 (1회 쿼리)
+    unresolved_counts: dict[int, int] = {}
+    if active_question_ids:
+        raw_unresolved = db.execute(
+            select(QuestionRecord.learner_id, func.count(QuestionRecord.id))
+            .where(
+                QuestionRecord.learner_id.in_(learner_ids),
+                QuestionRecord.question_id.in_(active_question_ids),
+                QuestionRecord.status == "REVIEW_NEEDED",
+            )
+            .group_by(QuestionRecord.learner_id)
+        ).all()
+        unresolved_counts = {lid: cnt for lid, cnt in raw_unresolved}
+
+    # 4. 인메모리 매핑으로 상태 일괄 갱신 (반복 쿼리 제거)
+    now = datetime.now(timezone.utc)
     for enr in enrollments:
         completed_videos_cnt = video_counts.get(enr.id, 0)
         submitted_quizzes_cnt = quiz_counts.get(enr.learner_id, 0)
         completed_items = completed_videos_cnt + submitted_quizzes_cnt
+        unresolved_cnt = unresolved_counts.get(enr.learner_id, 0)
 
-        if completed_items < total_items_count:
+        is_fully_completed = (completed_items >= total_items_count) and (unresolved_cnt == 0)
+
+        if not is_fully_completed:
             if enr.status == "COMPLETED":
                 enr.status = "IN_PROGRESS"
                 enr.current_completed_at = None
+        else:
+            if enr.status == "IN_PROGRESS":
+                enr.status = "COMPLETED"
+                enr.current_completed_at = now
+                if enr.first_completed_at is None:
+                    enr.first_completed_at = now
 
 
 def calculate_course_processing(course: Course) -> tuple[int, int]:
     """활성 영상 STT 및 활성 단위 퀴즈 AI 처리 상태 집계 (completed, total)"""
-    active_videos = [v for v in course.videos if v.is_active]
-    active_unit_quizzes = [q for q in course.quizzes if q.quiz_type == "UNIT" and q.is_active]
+    active_section_ids = {s.id for s in course.sections if s.is_active}
+    active_videos = [
+        v
+        for v in course.videos
+        if v.is_active and (v.section_id is None or v.section_id in active_section_ids)
+    ]
+    active_unit_quizzes = [
+        q
+        for q in course.quizzes
+        if q.quiz_type == "UNIT"
+        and q.is_active
+        and (q.section_id is None or q.section_id in active_section_ids)
+    ]
 
     total = len(active_videos) + len(active_unit_quizzes)
     completed_videos = sum(1 for v in active_videos if v.stt_status == "COMPLETED")

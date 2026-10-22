@@ -36,14 +36,6 @@ def get_ot_feed(
 ):
     if not authorization:
         raise AppError(401, "UNAUTHORIZED", "로그인이 필요합니다.")
-    # 커서 디코딩 (offset 기반)
-    offset = 0
-    if cursor:
-        try:
-            decoded = json.loads(base64.b64decode(cursor.encode()).decode())
-            offset = int(decoded.get("offset", 0))
-        except Exception:
-            offset = 0
 
     # 유저의 관심 직무 및 토픽 조회
     learner_prof = current_user.learner_profile
@@ -77,7 +69,7 @@ def get_ot_feed(
         desc(Video.id),
     ])
 
-    # DB 레벨에서 정렬 및 Eager Loading(N+1 방지), limit + 1로 hasNext 판별
+    # DB 레벨에서 정렬 및 Eager Loading(N+1 방지)
     query = (
         select(Video)
         .join(Course, Course.id == Video.course_id)
@@ -91,16 +83,50 @@ def get_ot_feed(
             Video.is_active.is_(True),
         )
         .order_by(*order_clauses)
-        .offset(offset)
-        .limit(size + 1)
     )
-    fetched_videos = db.scalars(query).unique().all()
-    has_next = len(fetched_videos) > size
-    page_videos = fetched_videos[:size]
+    all_ot_videos = list(db.scalars(query).unique().all())
+    total_ot = len(all_ot_videos)
 
-    next_cursor = None
-    if has_next:
-        next_cursor = base64.b64encode(json.dumps({"offset": offset + size}).encode()).decode()
+    if total_ot == 0:
+        return DataResponse(
+            data=CursorPageData(
+                items=[],
+                next_cursor=None,
+                has_next=False,
+            )
+        )
+
+    # 커서 디코딩: {"videoId": ...} 및 {"offset": ...} 모두 지원, 끝 도달 시 첫 OT로 순환
+    start_idx = 0
+    if cursor:
+        try:
+            decoded = json.loads(base64.b64decode(cursor.encode()).decode())
+            if isinstance(decoded, dict):
+                if "videoId" in decoded:
+                    target_vid = int(decoded["videoId"])
+                    for idx, v in enumerate(all_ot_videos):
+                        if v.id == target_vid:
+                            start_idx = (idx + 1) % total_ot
+                            break
+                    else:
+                        if "offset" in decoded:
+                            start_idx = int(decoded["offset"]) % total_ot
+                elif "offset" in decoded:
+                    start_idx = int(decoded["offset"]) % total_ot
+        except Exception:
+            start_idx = 0
+
+    page_videos = all_ot_videos[start_idx : start_idx + size]
+    if not page_videos:
+        page_videos = all_ot_videos[:size]
+        start_idx = 0
+
+    has_next = total_ot > 0
+    next_offset = (start_idx + len(page_videos)) % total_ot
+    last_vid_id = page_videos[-1].id
+    next_cursor = base64.b64encode(
+        json.dumps({"videoId": last_vid_id, "offset": next_offset}).encode()
+    ).decode()
 
     # 수강 여부 및 좋아요 여부 일괄 조회
     course_ids = [v.course_id for v in page_videos]
