@@ -5,7 +5,7 @@ import json
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, Header, Query
-from sqlalchemy import desc, select
+from sqlalchemy import case, desc, select
 from sqlalchemy.orm import joinedload
 
 from app.core.auth import get_current_user
@@ -56,34 +56,48 @@ def get_ot_feed(
     ).all()
     interest_topic_ids = set(user_interests)
 
-    # PUBLISHED 강좌의 활성 OT 영상 목록 조회
+    order_clauses = []
+    if interest_topic_ids or target_category_id:
+        topic_match_score = (
+            case((Course.topic_id.in_(interest_topic_ids), 2), else_=0)
+            if interest_topic_ids
+            else 0
+        )
+        cat_match_score = (
+            case((Course.category_id == target_category_id, 1), else_=0)
+            if target_category_id
+            else 0
+        )
+        order_clauses.append(desc(topic_match_score + cat_match_score))
+
+    order_clauses.extend([
+        desc(Video.view_count),
+        desc(Video.like_count),
+        desc(Course.published_at),
+        desc(Video.id),
+    ])
+
+    # DB 레벨에서 정렬 및 Eager Loading(N+1 방지), limit + 1로 hasNext 판별
     query = (
         select(Video)
         .join(Course, Course.id == Video.course_id)
+        .options(
+            joinedload(Video.course).joinedload(Course.category),
+            joinedload(Video.course).joinedload(Course.instructor).joinedload(User.instructor_profile),
+        )
         .where(
             Course.status == "PUBLISHED",
             Video.video_type == "OT",
             Video.is_active.is_(True),
         )
+        .order_by(*order_clauses)
+        .offset(offset)
+        .limit(size + 1)
     )
-    all_videos = db.scalars(query).all()
+    fetched_videos = db.scalars(query).unique().all()
+    has_next = len(fetched_videos) > size
+    page_videos = fetched_videos[:size]
 
-    # 정렬: 관심 주제/직무 일치 여부 -> view_count desc -> like_count desc -> published_at desc
-    def sort_key(v: Video):
-        c = v.course
-        topic_match = 1 if c.topic_id in interest_topic_ids else 0
-        cat_match = 1 if (target_category_id and c.category_id == target_category_id) else 0
-        score = (topic_match * 2) + cat_match
-        views = v.view_count or 0
-        likes = v.like_count or 0
-        pub_ts = c.published_at.timestamp() if c.published_at else 0
-        return (score, views, likes, pub_ts)
-
-    sorted_videos = sorted(all_videos, key=sort_key, reverse=True)
-
-    # 슬라이싱
-    page_videos = sorted_videos[offset : offset + size]
-    has_next = (offset + size) < len(sorted_videos)
     next_cursor = None
     if has_next:
         next_cursor = base64.b64encode(json.dumps({"offset": offset + size}).encode()).decode()
