@@ -19,7 +19,9 @@ class DataResponse(CamelModel, Generic[T]):
 
 
 class PageData(CamelModel, Generic[T]):
-    """페이지 기반 목록 응답 형식: { "data": { "items": [...], "page": 1, "size": 20, "total": 57 } }"""
+    """페이지 기반 목록 응답 형식:
+    { "data": { "items": [...], "page": 1, "size": 20, "total": 57 } }
+    """
 
     items: list[T]
     page: int
@@ -28,7 +30,9 @@ class PageData(CamelModel, Generic[T]):
 
 
 class CursorPageData(CamelModel, Generic[T]):
-    """커서 기반 목록 응답 형식: { "data": { "items": [...], "nextCursor": "...", "hasNext": true } }"""
+    """커서 기반 목록 응답 형식:
+    { "data": { "items": [...], "nextCursor": "...", "hasNext": true } }
+    """
 
     items: list[T]
     next_cursor: str | None = None

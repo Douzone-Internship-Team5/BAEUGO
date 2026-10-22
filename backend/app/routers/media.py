@@ -14,16 +14,16 @@ from app.services.storage import get_media_dir
 router = APIRouter(tags=["media"])
 
 
-@router.get("/media/{storageKey:path}")
-def serve_media_file(storageKey: str):
-    if ".." in storageKey:
+@router.get("/media/{storage_key:path}")
+def serve_media_file(storage_key: str):
+    if ".." in storage_key:
         raise AppError(404, "NOT_FOUND", "이미지를 찾을 수 없습니다.")
 
     media_dir = get_media_dir().resolve()
     try:
-        file_path = (media_dir / storageKey).resolve()
-    except Exception:
-        raise AppError(404, "NOT_FOUND", "이미지를 찾을 수 없습니다.")
+        file_path = (media_dir / storage_key).resolve()
+    except Exception as err:
+        raise AppError(404, "NOT_FOUND", "이미지를 찾을 수 없습니다.") from err
 
     if not file_path.is_relative_to(media_dir) or not file_path.is_file():
         raise AppError(404, "NOT_FOUND", "이미지를 찾을 수 없습니다.")
@@ -78,8 +78,8 @@ def stream_video(
     media_dir = get_media_dir().resolve()
     try:
         file_path = (media_dir / video.video_storage_key).resolve()
-    except Exception:
-        raise AppError(404, "NOT_FOUND", "영상 파일을 찾을 수 없습니다.")
+    except Exception as err:
+        raise AppError(404, "NOT_FOUND", "영상 파일을 찾을 수 없습니다.") from err
 
     if not file_path.is_relative_to(media_dir) or not file_path.is_file():
         raise AppError(404, "NOT_FOUND", "영상 파일을 찾을 수 없습니다.")

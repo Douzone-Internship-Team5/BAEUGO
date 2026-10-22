@@ -56,33 +56,33 @@ def _to_kst_date(dt: datetime) -> date:
 def get_instructor_stats(
     db: DbSession,
     current_user: Annotated[User, Depends(get_current_instructor)],
-    courseId: int | None = Query(None),
-    fromDate: date | None = Query(None, alias="from"),
-    toDate: date | None = Query(None, alias="to"),
-    groupBy: str = Query("day"),
+    course_id: Annotated[int | None, Query(alias="courseId")] = None,
+    from_date: Annotated[date | None, Query(alias="from")] = None,
+    to_date: Annotated[date | None, Query(alias="to")] = None,
+    group_by: Annotated[str, Query(alias="groupBy")] = "day",
 ):
-    if groupBy not in ("day", "course"):
+    if group_by not in ("day", "course"):
         raise AppError(400, "VALIDATION_ERROR", "groupBy는 day 또는 course만 허용됩니다.")
 
-    if courseId is not None:
-        verify_course_ownership(courseId, current_user.id, db)
+    if course_id is not None:
+        verify_course_ownership(course_id, current_user.id, db)
 
     # 날짜 기본값 (Asia/Seoul 기준 이번 달 1일 ~ 오늘)
     today = datetime.now(KST).date()
-    if toDate is None:
-        toDate = today
-    if fromDate is None:
-        fromDate = date(toDate.year, toDate.month, 1)
+    if to_date is None:
+        to_date = today
+    if from_date is None:
+        from_date = date(to_date.year, to_date.month, 1)
 
-    if fromDate > toDate:
+    if from_date > to_date:
         raise AppError(
             400, "VALIDATION_ERROR", "조회 시작일(from)은 종료일(to)보다 늦을 수 없습니다."
         )
 
     # 강사 소유 강좌 목록
     my_courses_query = select(Course).where(Course.instructor_id == current_user.id)
-    if courseId is not None:
-        my_courses_query = my_courses_query.where(Course.id == courseId)
+    if course_id is not None:
+        my_courses_query = my_courses_query.where(Course.id == course_id)
     my_courses = db.scalars(my_courses_query).all()
     my_course_ids = [c.id for c in my_courses]
 
@@ -91,8 +91,8 @@ def get_instructor_stats(
     # 당월 기간 stats 쿼리
     stats_query = select(CourseDailyStat).where(
         CourseDailyStat.course_id.in_(my_course_ids),
-        CourseDailyStat.start_date >= fromDate,
-        CourseDailyStat.start_date <= toDate,
+        CourseDailyStat.start_date >= from_date,
+        CourseDailyStat.start_date <= to_date,
     )
     stats_rows = db.scalars(stats_query).all() if my_course_ids else []
 
@@ -109,8 +109,8 @@ def get_instructor_stats(
     quiz_corr_rate = round(tot_first_corr / tot_first_ans * 100, 1) if tot_first_ans > 0 else None
 
     # 전월 동기 대비 비교 (comparison) 계산 (31일 경계 안전 처리)
-    prev_from = _shift_prev_month(fromDate)
-    prev_to = _shift_prev_month(toDate)
+    prev_from = _shift_prev_month(from_date)
+    prev_to = _shift_prev_month(to_date)
 
     prev_stats_query = select(CourseDailyStat).where(
         CourseDailyStat.course_id.in_(my_course_ids),
@@ -264,9 +264,9 @@ def get_instructor_stats(
     return DataResponse(
         data=InstructorStatsResponseData(
             period=StatsPeriod(
-                from_date=fromDate.isoformat(),
-                to_date=toDate.isoformat(),
-                group_by=groupBy,
+                from_date=from_date.isoformat(),
+                to_date=to_date.isoformat(),
+                group_by=group_by,
             ),
             summary=summary,
             daily_stats=daily_stats,

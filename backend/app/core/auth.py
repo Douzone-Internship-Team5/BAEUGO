@@ -10,7 +10,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from typing import Annotated
+from typing import TYPE_CHECKING, Annotated
 
 from fastapi import Depends
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
@@ -20,6 +20,9 @@ from app.core.database import DbSession
 from app.core.errors import AppError
 from app.core.security import decode_access_token
 from app.models.user import AccountType, Role, User
+
+if TYPE_CHECKING:
+    from app.models.course import Course, Section, Video
 
 # 기본값(auto_error=True)이면 헤더가 없을 때 FastAPI가 403을 보내므로 직접 401로 처리한다.
 bearer_scheme = HTTPBearer(auto_error=False)

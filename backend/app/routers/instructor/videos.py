@@ -40,38 +40,38 @@ router = APIRouter(tags=["instructor-videos"])
 def upload_video(
     db: DbSession,
     current_user: Annotated[User, Depends(get_current_instructor)],
-    courseId: Annotated[int, Form(...)],
-    videoType: Annotated[str, Form(...)],
+    course_id: Annotated[int, Form(alias="courseId")],
+    video_type: Annotated[str, Form(alias="videoType")],
     title: Annotated[str, Form(...)],
     file: Annotated[UploadFile, File(...)],
-    sectionId: Annotated[int | None, Form()] = None,
+    section_id: Annotated[int | None, Form(alias="sectionId")] = None,
     thumbnail: Annotated[UploadFile | None, File()] = None,
 ):
-    course = verify_course_ownership(courseId, current_user.id, db)
+    course = verify_course_ownership(course_id, current_user.id, db)
     if course.status not in ("DRAFT", "EDITING"):
         raise AppError(
             409, "CONFLICT", "DRAFT 또는 EDITING 상태인 강좌에서만 영상을 편집할 수 있습니다."
         )
 
-    if videoType not in ("OT", "LESSON"):
+    if video_type not in ("OT", "LESSON"):
         raise AppError(400, "VALIDATION_ERROR", "영상 유형은 OT 또는 LESSON이어야 합니다.")
 
     if not title or not title.strip() or len(title) > 200:
         raise AppError(400, "VALIDATION_ERROR", "영상 제목은 1~200자 이내로 입력해 주세요.")
 
-    if videoType == "LESSON" and sectionId is None:
+    if video_type == "LESSON" and section_id is None:
         raise AppError(400, "VALIDATION_ERROR", "학습 영상(LESSON)은 sectionId가 필수입니다.")
 
     validate_video_file(file)
     if thumbnail is not None:
         validate_thumbnail_file(thumbnail)
 
-    if sectionId is not None:
-        verify_section_ownership(sectionId, current_user.id, db, course_id=course.id)
+    if section_id is not None:
+        verify_section_ownership(section_id, current_user.id, db, course_id=course.id)
 
     # OT는 강좌당 활성 1개만 유지: 새 OT 등록 시 기존 OT is_active = False
-    if videoType == "OT":
-        sectionId = None
+    if video_type == "OT":
+        section_id = None
         existing_ots = db.scalars(
             select(Video).where(
                 Video.course_id == course.id,
@@ -86,7 +86,7 @@ def upload_video(
     else:
         max_order = db.scalar(
             select(func.coalesce(func.max(Video.sort_order), 0)).where(
-                Video.section_id == sectionId, Video.is_active.is_(True)
+                Video.section_id == section_id, Video.is_active.is_(True)
             )
         )
         sort_order = (max_order or 0) + 1
@@ -99,8 +99,8 @@ def upload_video(
 
     video = Video(
         course_id=course.id,
-        section_id=sectionId,
-        video_type=videoType,
+        section_id=section_id,
+        video_type=video_type,
         title=title,
         duration_seconds=360,  # 기본/모의 재생 시간
         sort_order=sort_order,
@@ -113,10 +113,10 @@ def upload_video(
     db.add(video)
 
     # 섹션 단위 퀴즈 자동 생성 및 재생성 연동
-    if videoType == "LESSON" and sectionId is not None:
+    if video_type == "LESSON" and section_id is not None:
         unit_quiz = db.scalar(
             select(Quiz).where(
-                Quiz.section_id == sectionId,
+                Quiz.section_id == section_id,
                 Quiz.quiz_type == "UNIT",
                 Quiz.is_active.is_(True),
             )
@@ -128,7 +128,7 @@ def upload_video(
             db.add(
                 Quiz(
                     course_id=course.id,
-                    section_id=sectionId,
+                    section_id=section_id,
                     quiz_type="UNIT",
                     ai_status="PENDING",
                     reviewed_at=None,
@@ -155,14 +155,14 @@ def upload_video(
     )
 
 
-@router.patch("/videos/{videoId}", response_model=DataResponse[VideoResponseData])
+@router.patch("/videos/{video_id}", response_model=DataResponse[VideoResponseData])
 async def update_or_replace_video(
-    videoId: int,
+    video_id: int,
     request: Request,
     db: DbSession,
     current_user: Annotated[User, Depends(get_current_instructor)],
 ):
-    video = verify_video_ownership(videoId, current_user.id, db)
+    video = verify_video_ownership(video_id, current_user.id, db)
     course = video.course
     if course.status not in ("DRAFT", "EDITING"):
         raise AppError(
@@ -171,15 +171,15 @@ async def update_or_replace_video(
 
     content_type = request.headers.get("content-type", "")
     title: str | None = None
-    sortOrder: int | None = None
+    sort_order: int | None = None
     file: UploadFile | None = None
     thumbnail: UploadFile | None = None
 
     if "application/json" in content_type:
         try:
             body = await request.json()
-        except Exception:
-            raise AppError(400, "VALIDATION_ERROR", "입력값을 확인해 주세요.")
+        except Exception as err:
+            raise AppError(400, "VALIDATION_ERROR", "입력값을 확인해 주세요.") from err
         if not isinstance(body, dict):
             raise AppError(400, "VALIDATION_ERROR", "입력값을 확인해 주세요.")
         if "title" in body and body["title"] is not None:
@@ -191,12 +191,14 @@ async def update_or_replace_video(
             if isinstance(raw_sort, bool):
                 raise AppError(400, "VALIDATION_ERROR", "정렬 순서 값이 올바르지 않습니다.")
             if isinstance(raw_sort, int):
-                sortOrder = raw_sort
+                sort_order = raw_sort
             elif isinstance(raw_sort, str):
                 try:
-                    sortOrder = int(raw_sort.strip())
-                except ValueError:
-                    raise AppError(400, "VALIDATION_ERROR", "정렬 순서 값이 올바르지 않습니다.")
+                    sort_order = int(raw_sort.strip())
+                except ValueError as err:
+                    raise AppError(
+                        400, "VALIDATION_ERROR", "정렬 순서 값이 올바르지 않습니다."
+                    ) from err
             else:
                 raise AppError(400, "VALIDATION_ERROR", "정렬 순서 값이 올바르지 않습니다.")
     else:
@@ -208,9 +210,11 @@ async def update_or_replace_video(
         raw_sort = form.get("sortOrder", form.get("sort_order"))
         if raw_sort is not None and raw_sort != "":
             try:
-                sortOrder = int(str(raw_sort).strip())
-            except (ValueError, TypeError):
-                raise AppError(400, "VALIDATION_ERROR", "정렬 순서 값이 올바르지 않습니다.")
+                sort_order = int(str(raw_sort).strip())
+            except (ValueError, TypeError) as err:
+                raise AppError(
+                    400, "VALIDATION_ERROR", "정렬 순서 값이 올바르지 않습니다."
+                ) from err
         file_val = form.get("file")
         if isinstance(file_val, UploadFile) or hasattr(file_val, "filename"):
             file = file_val  # type: ignore[assignment]
@@ -222,8 +226,8 @@ async def update_or_replace_video(
         if not title.strip() or len(title) > 200:
             raise AppError(400, "VALIDATION_ERROR", "영상 제목은 1~200자 이내로 입력해 주세요.")
 
-    if sortOrder is not None:
-        if (video.video_type == "LESSON" and sortOrder < 1) or sortOrder < 0:
+    if sort_order is not None:
+        if (video.video_type == "LESSON" and sort_order < 1) or sort_order < 0:
             raise AppError(400, "VALIDATION_ERROR", "정렬 순서(sortOrder) 값이 올바르지 않습니다.")
 
     if file is not None:
@@ -246,7 +250,7 @@ async def update_or_replace_video(
             video_type=video.video_type,
             title=title if title is not None else video.title,
             duration_seconds=video.duration_seconds,
-            sort_order=sortOrder if sortOrder is not None else video.sort_order,
+            sort_order=sort_order if sort_order is not None else video.sort_order,
             video_storage_key=new_video_key,
             thumbnail_storage_key=new_thumb_key,
             stt_status="PENDING",
@@ -300,8 +304,8 @@ async def update_or_replace_video(
     # 메타데이터만 수정하는 경우
     if title is not None:
         video.title = title
-    if sortOrder is not None:
-        video.sort_order = sortOrder
+    if sort_order is not None:
+        video.sort_order = sort_order
     if thumbnail is not None:
         video.thumbnail_storage_key = save_upload_file(
             thumbnail, f"courses/{course.id}/videos", "vthumb"
@@ -326,13 +330,13 @@ async def update_or_replace_video(
     )
 
 
-@router.delete("/videos/{videoId}", response_model=DataResponse[VideoResponseData])
+@router.delete("/videos/{video_id}", response_model=DataResponse[VideoResponseData])
 def delete_video(
-    videoId: int,
+    video_id: int,
     db: DbSession,
     current_user: Annotated[User, Depends(get_current_instructor)],
 ):
-    video = verify_video_ownership(videoId, current_user.id, db)
+    video = verify_video_ownership(video_id, current_user.id, db)
     course = video.course
     if course.status not in ("DRAFT", "EDITING"):
         raise AppError(
@@ -354,13 +358,13 @@ def delete_video(
 # ==========================================
 # [B-7] 대본 조회 · 수정 · STT 재시도
 # ==========================================
-@router.get("/videos/{videoId}/script", response_model=DataResponse[ScriptResponseData])
+@router.get("/videos/{video_id}/script", response_model=DataResponse[ScriptResponseData])
 def get_video_script(
-    videoId: int,
+    video_id: int,
     db: DbSession,
     current_user: Annotated[User, Depends(get_current_instructor)],
 ):
-    video = verify_video_ownership(videoId, current_user.id, db)
+    video = verify_video_ownership(video_id, current_user.id, db)
     segments = [
         ScriptSegment(
             seq=s.seq,
@@ -381,14 +385,14 @@ def get_video_script(
     )
 
 
-@router.put("/videos/{videoId}/script", response_model=DataResponse[ScriptResponseData])
+@router.put("/videos/{video_id}/script", response_model=DataResponse[ScriptResponseData])
 def update_video_script(
-    videoId: int,
+    video_id: int,
     req: ScriptUpdateRequest,
     db: DbSession,
     current_user: Annotated[User, Depends(get_current_instructor)],
 ):
-    video = verify_video_ownership(videoId, current_user.id, db)
+    video = verify_video_ownership(video_id, current_user.id, db)
     course = video.course
     if course.status not in ("DRAFT", "EDITING"):
         raise AppError(
@@ -451,14 +455,15 @@ def update_video_script(
 
 
 @router.post(
-    "/videos/{videoId}/script/regenerate", response_model=DataResponse[ScriptRegenerateResponseData]
+    "/videos/{video_id}/script/regenerate",
+    response_model=DataResponse[ScriptRegenerateResponseData],
 )
 def regenerate_video_script(
-    videoId: int,
+    video_id: int,
     db: DbSession,
     current_user: Annotated[User, Depends(get_current_instructor)],
 ):
-    video = verify_video_ownership(videoId, current_user.id, db)
+    video = verify_video_ownership(video_id, current_user.id, db)
     course = video.course
     if course.status not in ("DRAFT", "EDITING"):
         raise AppError(

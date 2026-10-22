@@ -69,14 +69,14 @@ def create_section(
     )
 
 
-@router.patch("/sections/{sectionId}", response_model=DataResponse[SectionResponseData])
+@router.patch("/sections/{section_id}", response_model=DataResponse[SectionResponseData])
 def update_section(
-    sectionId: int,
+    section_id: int,
     req: SectionUpdateRequest,
     db: DbSession,
     current_user: Annotated[User, Depends(get_current_instructor)],
 ):
-    section = verify_section_ownership(sectionId, current_user.id, db)
+    section = verify_section_ownership(section_id, current_user.id, db)
     course = section.course
     if course.status not in ("DRAFT", "EDITING"):
         raise AppError(
@@ -108,13 +108,13 @@ def update_section(
     )
 
 
-@router.delete("/sections/{sectionId}", response_model=DataResponse[SectionResponseData])
+@router.delete("/sections/{section_id}", response_model=DataResponse[SectionResponseData])
 def delete_section(
-    sectionId: int,
+    section_id: int,
     db: DbSession,
     current_user: Annotated[User, Depends(get_current_instructor)],
 ):
-    section = verify_section_ownership(sectionId, current_user.id, db)
+    section = verify_section_ownership(section_id, current_user.id, db)
     course = section.course
     if course.status not in ("DRAFT", "EDITING"):
         raise AppError(

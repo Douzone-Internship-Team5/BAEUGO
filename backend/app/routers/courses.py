@@ -2,17 +2,16 @@ from __future__ import annotations
 
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Query
 from sqlalchemy import case, desc, func, or_, select
 from sqlalchemy.orm import joinedload, selectinload
 
-from app.core.auth import get_optional_current_user
+from app.core.auth import OptionalUser
 from app.core.database import DbSession
 from app.core.errors import AppError
 from app.models.course import Course
 from app.models.learning import Enrollment
 from app.models.profile import LearnerTopicInterest
-from app.models.user import User
 from app.schemas.common import DataResponse, PageData
 from app.schemas.course import CategorySimple, CourseSearchItem, TopicSimple
 from app.services.storage import get_thumbnail_url
@@ -23,15 +22,19 @@ router = APIRouter(prefix="/courses", tags=["courses"])
 @router.get("", response_model=DataResponse[PageData[CourseSearchItem]])
 def search_courses(
     db: DbSession,
-    q: str | None = Query(None, description="강좌명/소개 검색 키워드"),
-    categoryId: int | None = Query(None, description="직무 카테고리 ID"),
-    topicId: int | None = Query(None, description="세부 주제 ID"),
-    difficulty: str | None = Query(None, description="난이도"),
-    price: str | None = Query(None, description="가격 필터: free 또는 paid"),
-    sort: str = Query("popular", description="정렬 기준: popular, latest, difficulty, recommended"),
-    page: int = Query(1, ge=1),
-    size: int = Query(20, ge=1, le=100),
-    current_user: Annotated[User | None, Depends(get_optional_current_user)] = None,
+    q: Annotated[str | None, Query(description="강좌명/소개 검색 키워드")] = None,
+    category_id: Annotated[
+        int | None, Query(alias="categoryId", description="직무 카테고리 ID")
+    ] = None,
+    topic_id: Annotated[int | None, Query(alias="topicId", description="세부 주제 ID")] = None,
+    difficulty: Annotated[str | None, Query(description="난이도")] = None,
+    price: Annotated[str | None, Query(description="가격 필터: free 또는 paid")] = None,
+    sort: Annotated[
+        str, Query(description="정렬 기준: popular, latest, difficulty, recommended")
+    ] = "popular",
+    page: Annotated[int, Query(ge=1)] = 1,
+    size: Annotated[int, Query(ge=1, le=100)] = 20,
+    current_user: OptionalUser = None,
 ):
     # 유효성 검사
     if difficulty is not None and difficulty not in ("BEGINNER", "INTERMEDIATE", "ADVANCED"):
@@ -58,11 +61,11 @@ def search_courses(
             )
         )
 
-    if categoryId is not None:
-        query = query.where(Course.category_id == categoryId)
+    if category_id is not None:
+        query = query.where(Course.category_id == category_id)
 
-    if topicId is not None:
-        query = query.where(Course.topic_id == topicId)
+    if topic_id is not None:
+        query = query.where(Course.topic_id == topic_id)
 
     if difficulty is not None:
         query = query.where(Course.difficulty == difficulty)

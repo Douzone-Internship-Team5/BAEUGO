@@ -59,8 +59,10 @@ def _parse_int_field(val: Any, field_name: str) -> int:
             raise AppError(400, "VALIDATION_ERROR", f"{field_name} 값이 올바르지 않습니다.")
         try:
             return int(s)
-        except ValueError:
-            raise AppError(400, "VALIDATION_ERROR", f"{field_name} 값이 올바르지 않습니다.")
+        except ValueError as err:
+            raise AppError(
+                400, "VALIDATION_ERROR", f"{field_name} 값이 올바르지 않습니다."
+            ) from err
     raise AppError(400, "VALIDATION_ERROR", f"{field_name} 값이 올바르지 않습니다.")
 
 
@@ -161,15 +163,15 @@ def list_my_courses(
 # ==========================================
 # [B-2] 강좌 편집용 상세 조회
 # ==========================================
-@router.get("/courses/{courseId}", response_model=DataResponse[InstructorCourseDetail])
+@router.get("/courses/{course_id}", response_model=DataResponse[InstructorCourseDetail])
 def get_course_detail_for_edit(
-    courseId: int,
+    course_id: int,
     db: DbSession,
     current_user: Annotated[User, Depends(get_current_instructor)],
 ):
     course = db.scalar(
         select(Course)
-        .where(Course.id == courseId, Course.instructor_id == current_user.id)
+        .where(Course.id == course_id, Course.instructor_id == current_user.id)
         .options(
             selectinload(Course.videos),
             selectinload(Course.sections).selectinload(Section.videos),
@@ -308,8 +310,8 @@ async def create_course(
     if "application/json" in content_type:
         try:
             body = await request.json()
-        except Exception:
-            raise AppError(400, "VALIDATION_ERROR", "입력값을 확인해 주세요.")
+        except Exception as err:
+            raise AppError(400, "VALIDATION_ERROR", "입력값을 확인해 주세요.") from err
         if not isinstance(body, dict):
             raise AppError(400, "VALIDATION_ERROR", "입력값을 확인해 주세요.")
         title_raw = body.get("title")
@@ -346,21 +348,21 @@ async def create_course(
     if not isinstance(difficulty_raw, str) or difficulty_raw not in VALID_DIFFICULTIES:
         raise AppError(400, "VALIDATION_ERROR", "유효하지 않은 난이도입니다.")
 
-    categoryId = _parse_int_field(category_raw, "categoryId")
-    topicId = _parse_int_field(topic_raw, "topicId")
-    priceKrw = (
+    category_id = _parse_int_field(category_raw, "categoryId")
+    topic_id = _parse_int_field(topic_raw, "topicId")
+    price_krw = (
         0 if (price_raw is None or price_raw == "") else _parse_int_field(price_raw, "priceKrw")
     )
 
-    # categoryId 및 topicId 소속/활성 검증
-    category = db.get(Category, categoryId)
-    topic = db.get(Topic, topicId)
+    # category_id 및 topic_id 소속/활성 검증
+    category = db.get(Category, category_id)
+    topic = db.get(Topic, topic_id)
     if (
         not category
         or not category.is_active
         or not topic
         or not topic.is_active
-        or topic.category_id != categoryId
+        or topic.category_id != category_id
     ):
         raise AppError(
             400,
@@ -368,7 +370,7 @@ async def create_course(
             "선택한 주제가 해당 직무 카테고리에 속하지 않거나 가격 값이 올바르지 않습니다.",
         )
 
-    if priceKrw < 0:
+    if price_krw < 0:
         raise AppError(
             400,
             "VALIDATION_ERROR",
@@ -380,12 +382,12 @@ async def create_course(
 
     course = Course(
         instructor_id=current_user.id,
-        category_id=categoryId,
-        topic_id=topicId,
+        category_id=category_id,
+        topic_id=topic_id,
         title=title_raw,
         description=description_raw,
         difficulty=difficulty_raw,
-        price_krw=priceKrw,
+        price_krw=price_krw,
         status="DRAFT",
     )
     db.add(course)
@@ -413,20 +415,21 @@ async def create_course(
     )
 
 
-@router.patch("/courses/{courseId}", response_model=DataResponse[CourseMutationResponseData])
+@router.patch("/courses/{course_id}", response_model=DataResponse[CourseMutationResponseData])
 async def update_course(
-    courseId: int,
+    course_id: int,
     request: Request,
     db: DbSession,
     current_user: Annotated[User, Depends(get_current_instructor)],
 ):
-    course = verify_course_ownership(courseId, current_user.id, db)
+    course = verify_course_ownership(course_id, current_user.id, db)
 
     if course.status not in ("DRAFT", "EDITING"):
         raise AppError(
             409,
             "CONFLICT",
-            "수정은 DRAFT·EDITING 상태에서만 가능하며, 삭제는 공개된 적 없는 DRAFT 강좌만 가능합니다.",
+            "수정은 DRAFT·EDITING 상태에서만 가능하며, "
+            "삭제는 공개된 적 없는 DRAFT 강좌만 가능합니다.",
         )
 
     content_type = request.headers.get("content-type", "")
@@ -435,8 +438,8 @@ async def update_course(
     if "application/json" in content_type:
         try:
             body = await request.json()
-        except Exception:
-            raise AppError(400, "VALIDATION_ERROR", "입력값을 확인해 주세요.")
+        except Exception as err:
+            raise AppError(400, "VALIDATION_ERROR", "입력값을 확인해 주세요.") from err
         if not isinstance(body, dict):
             raise AppError(400, "VALIDATION_ERROR", "입력값을 확인해 주세요.")
         title_raw = body.get("title")
@@ -457,13 +460,13 @@ async def update_course(
         if isinstance(thumb_val, UploadFile) or hasattr(thumb_val, "filename"):
             thumbnail = thumb_val  # type: ignore[assignment]
 
-    categoryId = _parse_int_field(category_raw, "categoryId") if category_raw is not None else None
-    topicId = _parse_int_field(topic_raw, "topicId") if topic_raw is not None else None
-    priceKrw = _parse_int_field(price_raw, "priceKrw") if price_raw is not None else None
+    category_id = _parse_int_field(category_raw, "categoryId") if category_raw is not None else None
+    topic_id = _parse_int_field(topic_raw, "topicId") if topic_raw is not None else None
+    price_krw = _parse_int_field(price_raw, "priceKrw") if price_raw is not None else None
 
-    if categoryId is not None or topicId is not None:
-        target_category_id = categoryId if categoryId is not None else course.category_id
-        target_topic_id = topicId if topicId is not None else course.topic_id
+    if category_id is not None or topic_id is not None:
+        target_category_id = category_id if category_id is not None else course.category_id
+        target_topic_id = topic_id if topic_id is not None else course.topic_id
         category = db.get(Category, target_category_id)
         topic = db.get(Topic, target_topic_id)
         if (
@@ -496,10 +499,10 @@ async def update_course(
             raise AppError(400, "VALIDATION_ERROR", "유효하지 않은 난이도입니다.")
         course.difficulty = difficulty_raw
 
-    if priceKrw is not None:
-        if priceKrw < 0:
+    if price_krw is not None:
+        if price_krw < 0:
             raise AppError(400, "VALIDATION_ERROR", "가격 값이 올바르지 않습니다.")
-        course.price_krw = priceKrw
+        course.price_krw = price_krw
 
     if thumbnail is not None:
         validate_thumbnail_file(thumbnail)
@@ -524,20 +527,21 @@ async def update_course(
     )
 
 
-@router.delete("/courses/{courseId}", response_model=DataResponse[CourseDeleteResponseData])
+@router.delete("/courses/{course_id}", response_model=DataResponse[CourseDeleteResponseData])
 def delete_course(
-    courseId: int,
+    course_id: int,
     db: DbSession,
     current_user: Annotated[User, Depends(get_current_instructor)],
 ):
-    course = verify_course_ownership(courseId, current_user.id, db)
+    course = verify_course_ownership(course_id, current_user.id, db)
 
     # 한 번도 공개된 적 없는 DRAFT 강좌만 물리 삭제 가능
     if course.status != "DRAFT" or course.published_at is not None:
         raise AppError(
             409,
             "CONFLICT",
-            "수정은 DRAFT·EDITING 상태에서만 가능하며, 삭제는 공개된 적 없는 DRAFT 강좌만 가능합니다.",
+            "수정은 DRAFT·EDITING 상태에서만 가능하며, "
+            "삭제는 공개된 적 없는 DRAFT 강좌만 가능합니다.",
         )
 
     deleted_id = course.id
@@ -551,17 +555,17 @@ def delete_course(
 # [B-4] 강좌 공개 및 수정 시작
 # ==========================================
 @router.put(
-    "/courses/{courseId}/status", response_model=DataResponse[CourseStatusUpdateResponseData]
+    "/courses/{course_id}/status", response_model=DataResponse[CourseStatusUpdateResponseData]
 )
 def update_course_status(
-    courseId: int,
+    course_id: int,
     req: CourseStatusUpdateRequest,
     db: DbSession,
     current_user: Annotated[User, Depends(get_current_instructor)],
 ):
     course = db.scalar(
         select(Course)
-        .where(Course.id == courseId, Course.instructor_id == current_user.id)
+        .where(Course.id == course_id, Course.instructor_id == current_user.id)
         .options(
             selectinload(Course.videos),
             selectinload(Course.sections).selectinload(Section.videos),

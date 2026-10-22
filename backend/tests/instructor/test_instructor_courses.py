@@ -529,7 +529,8 @@ def test_b2_b4_multiple_unit_quizzes_and_enrollment_recalculation(
     assert sec_detail["unitQuiz"]["quizId"] == active_unit_q.id
     assert res_detail.json()["data"]["publishCheck"]["isReady"] is True
 
-    # [B-4] 재공개 시 미해결 오답(REVIEW_NEEDED)이 있으므로 COMPLETED -> IN_PROGRESS 전환 (first_completed_at 보존)
+    # [B-4] 재공개 시 미해결 오답(REVIEW_NEEDED)이 있으므로
+    # COMPLETED -> IN_PROGRESS 전환 (first_completed_at 보존)
     res_pub = client.put(
         f"/api/v1/instructor/courses/{course.id}/status",
         json={"status": "PUBLISHED"},
@@ -591,7 +592,8 @@ def test_b3_course_json_and_strict_validation(client: TestClient, db_session: Se
     assert res_cat_zero.status_code == 400
     assert res_cat_zero.json()["error"]["code"] == "VALIDATION_ERROR"
 
-    # [실패] PATCH categoryId만 다른 직무(2)로 변경 시 기존 topicId(11)와 불일치 -> 400 VALIDATION_ERROR
+    # [실패] PATCH categoryId만 다른 직무(2)로 변경 시
+    # 기존 topicId(11)와 불일치 -> 400 VALIDATION_ERROR
     res_cat_only_mismatch = client.patch(
         f"/api/v1/instructor/courses/{cid}",
         json={"categoryId": 2},

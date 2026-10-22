@@ -13,11 +13,16 @@ def validate_publish_readiness(course: Course, db: Session) -> tuple[bool, list[
     """6대 공개 검증 조건 검사 (미충족 항목 문자열 목록 반환).
 
     1. 활성 무료 OT 영상(video_type='OT', is_active=true) 정확히 1개 존재
-    2. 활성 섹션(sections.is_active=true) 최소 1개 이상 및 활성 섹션마다 활성 학습 영상(video_type='LESSON', is_active=true) 1개 이상 존재
-    3. 모든 활성 영상(OT 포함)의 stt_status='COMPLETED' 및 강사 대본 검수 완료(transcript_reviewed_at IS NOT NULL)
-    4. 활성 섹션마다 단위 확인 퀴즈(quiz_type='UNIT', is_active=true)의 ai_status='COMPLETED' 및 강사 검수 완료(reviewed_at IS NOT NULL)
-    5. 코스 종합 퀴즈(quiz_type='FINAL', is_active=true) 존재 및 강사 검수 완료(reviewed_at IS NOT NULL)
-    6. 모든 활성 퀴즈(단위·종합)당 활성 문항(questions.is_active=true) 3~5개 및 문항당 보기(question_choices) 정확히 4개(1~4번) 존재
+    2. 활성 섹션(sections.is_active=true) 최소 1개 이상 및 활성 섹션마다
+       활성 학습 영상(video_type='LESSON', is_active=true) 1개 이상 존재
+    3. 모든 활성 영상(OT 포함)의 stt_status='COMPLETED' 및 강사 대본 검수 완료
+       (transcript_reviewed_at IS NOT NULL)
+    4. 활성 섹션마다 단위 확인 퀴즈(quiz_type='UNIT', is_active=true)의
+       ai_status='COMPLETED' 및 강사 검수 완료(reviewed_at IS NOT NULL)
+    5. 코스 종합 퀴즈(quiz_type='FINAL', is_active=true) 존재 및
+       강사 검수 완료(reviewed_at IS NOT NULL)
+    6. 모든 활성 퀴즈(단위·종합)당 활성 문항(questions.is_active=true) 3~5개 및
+       문항당 보기(question_choices) 정확히 4개(1~4번) 존재
     """
     missing: list[str] = []
 

@@ -99,7 +99,8 @@ def test_video_streaming(client: TestClient, db_session: Session):
         assert res_no_file.status_code == 404
         assert res_no_file.json()["error"]["code"] == "NOT_FOUND"
 
-        # [M-1 권한 검증] LESSON 영상은 비로그인/미수강 학습자 접근 시 403 FORBIDDEN, 담당 강사/수강생은 200 OK
+        # [M-1 권한 검증] LESSON 영상은 비로그인/미수강 학습자 접근 시 403 FORBIDDEN,
+        # 담당 강사/수강생은 200 OK
         from app.models.learning import Enrollment
 
         lesson_vid = Video(

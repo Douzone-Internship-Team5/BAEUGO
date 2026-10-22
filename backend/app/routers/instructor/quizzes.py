@@ -30,21 +30,23 @@ router = APIRouter(tags=["instructor-quizzes"])
 # ==========================================
 # [B-8] 단위 · 종합 퀴즈 조회 · 수정 · AI 재생성
 # ==========================================
-@router.get("/courses/{courseId}/quiz", response_model=DataResponse[QuizDetailResponseData])
+@router.get("/courses/{course_id}/quiz", response_model=DataResponse[QuizDetailResponseData])
 def get_quiz_detail(
-    courseId: int,
+    course_id: int,
     db: DbSession,
     current_user: Annotated[User, Depends(get_current_instructor)],
-    sectionId: int | None = Query(None, description="섹션 ID (단위 퀴즈 조회 시 전달)"),
+    section_id: Annotated[
+        int | None, Query(alias="sectionId", description="섹션 ID (단위 퀴즈 조회 시 전달)")
+    ] = None,
 ):
-    course = verify_course_ownership(courseId, current_user.id, db)
+    course = verify_course_ownership(course_id, current_user.id, db)
 
-    if sectionId is not None:
-        verify_section_ownership(sectionId, current_user.id, db, course_id=course.id)
+    if section_id is not None:
+        verify_section_ownership(section_id, current_user.id, db, course_id=course.id)
         quiz = db.scalar(
             select(Quiz).where(
                 Quiz.course_id == course.id,
-                Quiz.section_id == sectionId,
+                Quiz.section_id == section_id,
                 Quiz.quiz_type == "UNIT",
                 Quiz.is_active.is_(True),
             )
@@ -92,15 +94,15 @@ def get_quiz_detail(
     )
 
 
-@router.put("/courses/{courseId}/quiz", response_model=DataResponse[QuizDetailResponseData])
+@router.put("/courses/{course_id}/quiz", response_model=DataResponse[QuizDetailResponseData])
 def update_quiz(
-    courseId: int,
+    course_id: int,
     req: QuizUpdateRequest,
     db: DbSession,
     current_user: Annotated[User, Depends(get_current_instructor)],
-    sectionId: int | None = Query(None),
+    section_id: Annotated[int | None, Query(alias="sectionId")] = None,
 ):
-    course = verify_course_ownership(courseId, current_user.id, db)
+    course = verify_course_ownership(course_id, current_user.id, db)
     if course.status not in ("DRAFT", "EDITING"):
         raise AppError(
             409,
@@ -108,12 +110,16 @@ def update_quiz(
             "DRAFT 또는 EDITING 상태인 강좌에서만 퀴즈를 수정하거나 재생성할 수 있습니다.",
         )
 
+    quiz_validation_msg = (
+        "퀴즈는 3~5문항이어야 하며, 각 문항의 보기(choices)는 정확히 4개, "
+        "정답 번호(correctChoiceNo)는 1~4여야 합니다."
+    )
     # 3~5문항, 문항당 보기 4개, 정답 1~4 및 공백 검증
     if len(req.questions) < 3 or len(req.questions) > 5:
         raise AppError(
             400,
             "VALIDATION_ERROR",
-            "퀴즈는 3~5문항이어야 하며, 각 문항의 보기(choices)는 정확히 4개, 정답 번호(correctChoiceNo)는 1~4여야 합니다.",
+            quiz_validation_msg,
         )
     for q_item in req.questions:
         if (
@@ -128,16 +134,16 @@ def update_quiz(
             raise AppError(
                 400,
                 "VALIDATION_ERROR",
-                "퀴즈는 3~5문항이어야 하며, 각 문항의 보기(choices)는 정확히 4개, 정답 번호(correctChoiceNo)는 1~4여야 합니다.",
+                quiz_validation_msg,
             )
 
     # 퀴즈 조회 또는 생성
-    if sectionId is not None:
-        verify_section_ownership(sectionId, current_user.id, db, course_id=course.id)
+    if section_id is not None:
+        verify_section_ownership(section_id, current_user.id, db, course_id=course.id)
         quiz = db.scalar(
             select(Quiz).where(
                 Quiz.course_id == course.id,
-                Quiz.section_id == sectionId,
+                Quiz.section_id == section_id,
                 Quiz.quiz_type == "UNIT",
                 Quiz.is_active.is_(True),
             )
@@ -145,7 +151,7 @@ def update_quiz(
         if not quiz:
             quiz = Quiz(
                 course_id=course.id,
-                section_id=sectionId,
+                section_id=section_id,
                 quiz_type="UNIT",
                 ai_status="COMPLETED",
                 is_active=True,
@@ -173,7 +179,8 @@ def update_quiz(
             db.flush()
 
     # (치명적 제약조건 방어)
-    # 기존 문항 중 수강생 제출 이력(attempt_questions) 또는 오답노트 이력(question_records)이 있는 문항은
+    # 기존 문항 중 수강생 제출 이력(attempt_questions) 또는
+    # 오답노트 이력(question_records)이 있는 문항은
     # is_active=False 및 order_no = -id 로 음수화하여 보존!
     existing_questions = list(quiz.questions)
     for old_q in existing_questions:
@@ -257,15 +264,17 @@ def update_quiz(
 
 
 @router.post(
-    "/courses/{courseId}/quiz/regenerate", response_model=DataResponse[QuizRegenerateResponseData]
+    "/courses/{course_id}/quiz/regenerate", response_model=DataResponse[QuizRegenerateResponseData]
 )
 def regenerate_unit_quiz(
-    courseId: int,
+    course_id: int,
     db: DbSession,
     current_user: Annotated[User, Depends(get_current_instructor)],
-    sectionId: int = Query(..., description="재생성할 단위 퀴즈의 섹션 ID"),
+    section_id: Annotated[
+        int, Query(alias="sectionId", description="재생성할 단위 퀴즈의 섹션 ID")
+    ],
 ):
-    course = verify_course_ownership(courseId, current_user.id, db)
+    course = verify_course_ownership(course_id, current_user.id, db)
     if course.status not in ("DRAFT", "EDITING"):
         raise AppError(
             409,
@@ -273,11 +282,11 @@ def regenerate_unit_quiz(
             "DRAFT 또는 EDITING 상태인 강좌에서만 퀴즈를 수정하거나 재생성할 수 있습니다.",
         )
 
-    verify_section_ownership(sectionId, current_user.id, db, course_id=course.id)
+    verify_section_ownership(section_id, current_user.id, db, course_id=course.id)
     quiz = db.scalar(
         select(Quiz).where(
             Quiz.course_id == course.id,
-            Quiz.section_id == sectionId,
+            Quiz.section_id == section_id,
             Quiz.quiz_type == "UNIT",
             Quiz.is_active.is_(True),
         )
@@ -285,7 +294,7 @@ def regenerate_unit_quiz(
     if not quiz:
         quiz = Quiz(
             course_id=course.id,
-            section_id=sectionId,
+            section_id=section_id,
             quiz_type="UNIT",
             ai_status="PENDING",
             reviewed_at=None,

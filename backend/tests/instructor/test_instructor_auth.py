@@ -81,7 +81,8 @@ def test_instructor_inactive_account(client: TestClient, db_session: Session):
 
 
 def test_instructor_ownership_security_404(client: TestClient, db_session: Session):
-    # [보안 규정 404 NOT_FOUND] 타인 강좌, 섹션, 영상에 접근 시 403이 아닌 404를 반환하여 리소스 존재 여부를 은닉
+    # [보안 규정 404 NOT_FOUND] 타인 강좌, 섹션, 영상에 접근 시
+    # 403이 아닌 404를 반환하여 리소스 존재 여부를 은닉
     other_user = User(
         id=99,
         email="other99@baeugo.test",
