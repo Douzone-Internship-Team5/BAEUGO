@@ -1,7 +1,10 @@
 """목업 계정과 직무·주제 기준 데이터를 넣는다.
 
 실행: docker compose exec api python -m app.seed
-이미 있는 행은 건드리지 않고 없는 것만 넣으므로 여러 번 실행해도 된다.
+여러 번 실행해도 된다.
+- 직무·주제: 없으면 넣고, 있으면 이름·정렬 순서를 이 파일 기준으로 맞춘다.
+  목록에서 빠진 행은 지우지 않는다.
+- 목업 계정: 없는 계정만 넣고, 이미 있는 계정은 건드리지 않는다.
 """
 
 import logging
@@ -43,19 +46,13 @@ CATEGORIES = [
 
 # 주제 id = 직무 id × 10 + 순번 (예: 11 문서 작성, 61 업무 자동화)
 TOPIC_NAMES = {
-    1: ["문서 작성", "서비스 기획", "프로젝트 일정 관리", "요구사항 정의", "회의·협업 진행"],
-    2: ["퍼포먼스 마케팅", "콘텐츠 마케팅", "브랜드 전략", "SNS 채널 운영", "마케팅 성과 분석"],
-    3: ["엑셀 데이터 분석", "SQL 기초", "파이썬 데이터 분석", "데이터 시각화", "통계 기초"],
-    4: ["프로그래밍 기초", "웹 개발", "데이터베이스", "클라우드 기초", "Git 협업"],
-    5: ["UI·UX 디자인", "피그마 활용", "브랜드·그래픽 디자인", "프레젠테이션 디자인"],
-    6: ["업무 자동화", "엑셀 실무", "파워포인트 실무", "생성형 AI 업무 활용", "협업 툴 활용"],
-    7: [
-        "이력서·자기소개서",
-        "면접 준비",
-        "비즈니스 커뮤니케이션",
-        "리더십·팀 관리",
-        "직무 전환 전략",
-    ],
+    1: ["문서 작성", "서비스 기획", "프로젝트 일정 관리"],
+    2: ["퍼포먼스 마케팅", "콘텐츠 마케팅", "SNS 채널 운영"],
+    3: ["엑셀 데이터 분석", "SQL 기초", "데이터 시각화"],
+    4: ["프로그래밍 기초", "웹 개발", "Git 협업"],
+    5: ["UI·UX 디자인", "피그마 활용", "프레젠테이션 디자인"],
+    6: ["업무 자동화", "엑셀 실무", "생성형 AI 업무 활용"],
+    7: ["이력서·자기소개서", "면접 준비", "비즈니스 커뮤니케이션"],
 }
 
 
@@ -115,7 +112,7 @@ def seed_categories(db: Session) -> None:
         {"id": category_id, "code": code, "name": name, "sort_order": category_id}
         for category_id, code, name in CATEGORIES
     ]
-    db.execute(insert(Category).values(rows).on_conflict_do_nothing())
+    upsert_name_and_sort_order(db, Category, rows)
     reset_id_sequence(db, Category.__tablename__)
 
 
@@ -130,8 +127,20 @@ def seed_topics(db: Session) -> None:
         for category_id, names in TOPIC_NAMES.items()
         for order, name in enumerate(names, start=1)
     ]
-    db.execute(insert(Topic).values(rows).on_conflict_do_nothing())
+    upsert_name_and_sort_order(db, Topic, rows)
     reset_id_sequence(db, Topic.__tablename__)
+
+
+def upsert_name_and_sort_order(
+    db: Session, model: type[Category | Topic], rows: list[dict]
+) -> None:
+    statement = insert(model).values(rows)
+    db.execute(
+        statement.on_conflict_do_update(
+            index_elements=[model.id],
+            set_={"name": statement.excluded.name, "sort_order": statement.excluded.sort_order},
+        )
+    )
 
 
 def reset_id_sequence(db: Session, table_name: str) -> None:
