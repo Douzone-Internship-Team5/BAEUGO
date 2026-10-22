@@ -57,6 +57,23 @@ def test_b9_instructor_stats_all_cases(client: TestClient, db_session: Session):
     assert course_data["courseStats"] is not None
     assert any(cs["courseId"] == course.id for cs in course_data["courseStats"])
 
+    # [성공 2-1] from, to 날짜 파라미터 생략 시 기본값(당월 1일 ~ 오늘) 자동 적용 검증
+    res_default_dates = client.get(f"/api/v1/instructor/stats?courseId={course.id}")
+    assert res_default_dates.status_code == 200
+    assert res_default_dates.json()["data"]["period"]["from"] is not None
+    assert res_default_dates.json()["data"]["period"]["to"] is not None
+
+    # [성공 2-2] 해당 기간 통계 데이터가 전혀 없는 경우 0 및 빈 배열 반환
+    res_empty_period = client.get(
+        f"/api/v1/instructor/stats?courseId={course.id}&from=2020-01-01&to=2020-01-31"
+    )
+    assert res_empty_period.status_code == 200
+    empty_data = res_empty_period.json()["data"]
+    assert empty_data["summary"]["lessonViews"] == 0
+    assert empty_data["summary"]["newStudents"] == 0
+    assert empty_data["summary"]["expectedRevenue"] == 0
+    assert empty_data["dailyStats"] == []
+
     # [실패 1] 잘못된 groupBy 값 전달 -> 400 VALIDATION_ERROR
     res_bad_group = client.get("/api/v1/instructor/stats?groupBy=month")
     assert res_bad_group.status_code == 400

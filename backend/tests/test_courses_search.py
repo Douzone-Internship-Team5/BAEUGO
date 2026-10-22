@@ -61,7 +61,23 @@ def test_course_search_all_cases(client: TestClient, db_session: Session):
     assert res_topic_zero.status_code == 200
     assert res_topic_zero.json()["data"]["total"] == 0
 
-    # [성공 4] 난이도 필터 및 정렬 (sort=difficulty, latest, popular)
+    # [성공 4] 난이도 필터링 (difficulty=BEGINNER / difficulty=ADVANCED)
+    res_diff_beg = client.get("/api/v1/courses?difficulty=BEGINNER")
+    assert res_diff_beg.status_code == 200
+    assert any(c["courseId"] == c_free.id for c in res_diff_beg.json()["data"]["items"])
+    assert not any(c["courseId"] == c_paid.id for c in res_diff_beg.json()["data"]["items"])
+
+    res_diff_adv = client.get("/api/v1/courses?difficulty=ADVANCED")
+    assert res_diff_adv.status_code == 200
+    assert any(c["courseId"] == c_paid.id for c in res_diff_adv.json()["data"]["items"])
+    assert not any(c["courseId"] == c_free.id for c in res_diff_adv.json()["data"]["items"])
+
+    # [성공 5] 복합 필터 (검색어 + 카테고리 + 가격 + 난이도)
+    res_comb = client.get("/api/v1/courses?q=기획&categoryId=1&price=free&difficulty=BEGINNER")
+    assert res_comb.status_code == 200
+    assert any(c["courseId"] == c_free.id for c in res_comb.json()["data"]["items"])
+
+    # [성공 6] 정렬 (sort=difficulty, latest, popular)
     res_diff = client.get("/api/v1/courses?sort=difficulty")
     assert res_diff.status_code == 200
 
@@ -71,7 +87,7 @@ def test_course_search_all_cases(client: TestClient, db_session: Session):
     res_pop = client.get("/api/v1/courses?sort=popular")
     assert res_pop.status_code == 200
 
-    # [성공 5] 개인화 추천 정렬 (sort=recommended, 로그인 필수)
+    # [성공 7] 개인화 추천 정렬 (sort=recommended, 로그인 필수)
     res_rec = client.get(
         "/api/v1/courses?sort=recommended",
         headers=auth_header(2),
@@ -112,7 +128,12 @@ def test_course_search_all_cases(client: TestClient, db_session: Session):
     assert res_bad_page.status_code == 400
     assert res_bad_page.json()["error"]["code"] == "VALIDATION_ERROR"
 
-    # [실패 7] size > 100 경계값 유효성 실패 -> 400 VALIDATION_ERROR
+    # [실패 7] size < 1 경계값 유효성 실패 -> 400 VALIDATION_ERROR
+    res_bad_size_zero = client.get("/api/v1/courses?size=0")
+    assert res_bad_size_zero.status_code == 400
+    assert res_bad_size_zero.json()["error"]["code"] == "VALIDATION_ERROR"
+
+    # [실패 8] size > 100 경계값 유효성 실패 -> 400 VALIDATION_ERROR
     res_bad_size = client.get("/api/v1/courses?size=101")
     assert res_bad_size.status_code == 400
     assert res_bad_size.json()["error"]["code"] == "VALIDATION_ERROR"

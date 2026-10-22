@@ -131,6 +131,90 @@ def test_b8_quizzes_crud_and_validation(client: TestClient, db_session: Session)
     )
     assert res_c_range.status_code == 400
 
+    # [실패 5-1] PUT 문항 본문 공백 -> 400 VALIDATION_ERROR
+    res_empty_content = client.put(
+        f"/api/v1/instructor/courses/{course.id}/quiz",
+        json={
+            "questions": [
+                {
+                    "content": "   ",
+                    "choices": ["1", "2", "3", "4"],
+                    "correctChoiceNo": 1,
+                    "explanation": "해설",
+                },
+                {
+                    "content": "문제 2",
+                    "choices": ["1", "2", "3", "4"],
+                    "correctChoiceNo": 2,
+                    "explanation": "해설",
+                },
+                {
+                    "content": "문제 3",
+                    "choices": ["1", "2", "3", "4"],
+                    "correctChoiceNo": 3,
+                    "explanation": "해설",
+                },
+            ]
+        },
+    )
+    assert res_empty_content.status_code == 400
+
+    # [실패 5-2] PUT 문항 해설 공백 -> 400 VALIDATION_ERROR
+    res_empty_expl = client.put(
+        f"/api/v1/instructor/courses/{course.id}/quiz",
+        json={
+            "questions": [
+                {
+                    "content": "문제 1",
+                    "choices": ["1", "2", "3", "4"],
+                    "correctChoiceNo": 1,
+                    "explanation": "   ",
+                },
+                {
+                    "content": "문제 2",
+                    "choices": ["1", "2", "3", "4"],
+                    "correctChoiceNo": 2,
+                    "explanation": "해설",
+                },
+                {
+                    "content": "문제 3",
+                    "choices": ["1", "2", "3", "4"],
+                    "correctChoiceNo": 3,
+                    "explanation": "해설",
+                },
+            ]
+        },
+    )
+    assert res_empty_expl.status_code == 400
+
+    # [실패 5-3] PUT 보기 중 공백 존재 -> 400 VALIDATION_ERROR
+    res_empty_choice = client.put(
+        f"/api/v1/instructor/courses/{course.id}/quiz",
+        json={
+            "questions": [
+                {
+                    "content": "문제 1",
+                    "choices": ["1", "", "3", "4"],
+                    "correctChoiceNo": 1,
+                    "explanation": "해설",
+                },
+                {
+                    "content": "문제 2",
+                    "choices": ["1", "2", "3", "4"],
+                    "correctChoiceNo": 2,
+                    "explanation": "해설",
+                },
+                {
+                    "content": "문제 3",
+                    "choices": ["1", "2", "3", "4"],
+                    "correctChoiceNo": 3,
+                    "explanation": "해설",
+                },
+            ]
+        },
+    )
+    assert res_empty_choice.status_code == 400
+
     # [성공 1] PUT 종합 퀴즈 정상 등록 (3문항, 보기 4개)
     valid_payload = {
         "questions": [

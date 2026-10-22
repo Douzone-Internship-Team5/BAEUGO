@@ -52,6 +52,21 @@ def test_b1_my_courses(client: TestClient, db_session: Session):
     assert res_err.status_code == 400
     assert res_err.json()["error"]["code"] == "VALIDATION_ERROR"
 
+    # [실패 2] page < 1 유효성 실패 -> 400 VALIDATION_ERROR
+    res_bad_page = client.get("/api/v1/instructor/courses?page=0")
+    assert res_bad_page.status_code == 400
+    assert res_bad_page.json()["error"]["code"] == "VALIDATION_ERROR"
+
+    # [실패 3] size < 1 유효성 실패 -> 400 VALIDATION_ERROR
+    res_bad_size_0 = client.get("/api/v1/instructor/courses?size=0")
+    assert res_bad_size_0.status_code == 400
+    assert res_bad_size_0.json()["error"]["code"] == "VALIDATION_ERROR"
+
+    # [실패 4] size > 100 유효성 실패 -> 400 VALIDATION_ERROR
+    res_bad_size_101 = client.get("/api/v1/instructor/courses?size=101")
+    assert res_bad_size_101.status_code == 400
+    assert res_bad_size_101.json()["error"]["code"] == "VALIDATION_ERROR"
+
 
 def test_b2_course_detail(client: TestClient, db_session: Session):
     course = Course(
@@ -154,6 +169,45 @@ def test_b3_course_crud(client: TestClient, db_session: Session):
     )
     assert res_missing_title.status_code == 400
 
+    # [실패 4-1] POST 제목 200자 초과 -> 400
+    res_long_title = client.post(
+        "/api/v1/instructor/courses",
+        data={
+            "title": "가" * 201,
+            "description": "설명",
+            "categoryId": 1,
+            "topicId": 11,
+            "difficulty": "BEGINNER",
+        },
+    )
+    assert res_long_title.status_code == 400
+
+    # [실패 4-2] POST 소개 공백 -> 400
+    res_empty_desc = client.post(
+        "/api/v1/instructor/courses",
+        data={
+            "title": "제목",
+            "description": "   ",
+            "categoryId": 1,
+            "topicId": 11,
+            "difficulty": "BEGINNER",
+        },
+    )
+    assert res_empty_desc.status_code == 400
+
+    # [실패 4-3] POST 유효하지 않은 난이도 -> 400
+    res_bad_diff = client.post(
+        "/api/v1/instructor/courses",
+        data={
+            "title": "제목",
+            "description": "설명",
+            "categoryId": 1,
+            "topicId": 11,
+            "difficulty": "SUPER_HARD",
+        },
+    )
+    assert res_bad_diff.status_code == 400
+
     # [성공 2] PATCH 강좌 메타데이터 수정
     res_patch = client.patch(
         f"/api/v1/instructor/courses/{course_id}",
@@ -176,6 +230,27 @@ def test_b3_course_crud(client: TestClient, db_session: Session):
         data={"priceKrw": -100},
     )
     assert res_patch_neg.status_code == 400
+
+    # [실패 6-1] PATCH 제목 200자 초과 -> 400
+    res_patch_long_title = client.patch(
+        f"/api/v1/instructor/courses/{course_id}",
+        data={"title": "가" * 201},
+    )
+    assert res_patch_long_title.status_code == 400
+
+    # [실패 6-2] PATCH 난이도 오류 -> 400
+    res_patch_bad_diff = client.patch(
+        f"/api/v1/instructor/courses/{course_id}",
+        data={"difficulty": "IMPOSSIBLE"},
+    )
+    assert res_patch_bad_diff.status_code == 400
+
+    # [실패 6-3] PATCH 소개 공백 -> 400
+    res_patch_empty_desc = client.patch(
+        f"/api/v1/instructor/courses/{course_id}",
+        data={"description": "   "},
+    )
+    assert res_patch_empty_desc.status_code == 400
 
     # [실패 7] PUBLISHED 상태 강좌 직접 PATCH -> 409 CONFLICT
     pub_course = Course(
@@ -377,6 +452,33 @@ def test_b4_course_status_transitions(client: TestClient, db_session: Session):
     assert res_edit.status_code == 200
     assert res_edit.json()["data"]["status"] == "EDITING"
     assert res_edit.json()["data"]["closedByUserId"] == 6
+
+    # [실패 5] OPERATOR_HIDDEN 상태 강좌를 강사가 임의로 PUBLISHED/EDITING 전환 시도 -> 409 CONFLICT
+    hidden_course = Course(
+        instructor_id=6,
+        category_id=1,
+        topic_id=11,
+        title="운영자 숨김 강좌",
+        description="설명",
+        difficulty="BEGINNER",
+        price_krw=0,
+        status="OPERATOR_HIDDEN",
+        closed_reason="운영자 제재",
+    )
+    db_session.add(hidden_course)
+    db_session.commit()
+
+    res_hidden_pub = client.put(
+        f"/api/v1/instructor/courses/{hidden_course.id}/status",
+        json={"status": "PUBLISHED"},
+    )
+    assert res_hidden_pub.status_code == 409
+
+    res_hidden_edit = client.put(
+        f"/api/v1/instructor/courses/{hidden_course.id}/status",
+        json={"status": "EDITING"},
+    )
+    assert res_hidden_edit.status_code == 409
 
 
 def test_b2_b4_multiple_unit_quizzes_and_enrollment_recalculation(

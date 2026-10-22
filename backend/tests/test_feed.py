@@ -1,6 +1,9 @@
+import base64
+import json
 from datetime import UTC, datetime
 
 from fastapi.testclient import TestClient
+from sqlalchemy import delete
 from sqlalchemy.orm import Session
 
 from app.models.course import Course, Video
@@ -77,10 +80,23 @@ def test_feed_ot_all_cases(client: TestClient, db_session: Session):
     assert res_bad_size.status_code == 400
     assert res_bad_size.json()["error"]["code"] == "VALIDATION_ERROR"
 
-    # [성공 3] {"videoId": ...} 커서 포맷 및 마지막 OT 도달 시 첫 OT로 순환 재생 검증
-    import base64
-    import json
+    # [실패 4] size > 100 경계값 유효성 검사 실패 -> 400 VALIDATION_ERROR
+    res_bad_size_101 = client.get(
+        "/api/v1/feed/ot?size=101",
+        headers=auth_header(2),
+    )
+    assert res_bad_size_101.status_code == 400
+    assert res_bad_size_101.json()["error"]["code"] == "VALIDATION_ERROR"
 
+    # [성공 3] 잘못된 포맷/변조된 커서 전달 시 첫 번째 영상부터 안전하게 폴백
+    res_bad_cursor = client.get(
+        "/api/v1/feed/ot?size=5&cursor=invalid_base64_string!",
+        headers=auth_header(2),
+    )
+    assert res_bad_cursor.status_code == 200
+    assert len(res_bad_cursor.json()["data"]["items"]) > 0
+
+    # [성공 4] {"videoId": ...} 커서 포맷 및 마지막 OT 도달 시 첫 OT로 순환 재생 검증
     ot_vid2 = Video(
         course_id=course.id,
         video_type="OT",
@@ -122,3 +138,16 @@ def test_feed_ot_all_cases(client: TestClient, db_session: Session):
     )
     assert res_loop.status_code == 200
     assert res_loop.json()["data"]["items"][0]["videoId"] == first_id
+
+
+def test_feed_ot_empty(client: TestClient, db_session: Session):
+    """활성 무료 OT 영상이 하나도 없을 때 빈 목록 반환 검증."""
+    db_session.execute(delete(Video))
+    db_session.commit()
+
+    res = client.get("/api/v1/feed/ot?size=10", headers=auth_header(2))
+    assert res.status_code == 200
+    data = res.json()["data"]
+    assert data["items"] == []
+    assert data["nextCursor"] is None
+    assert data["hasNext"] is False

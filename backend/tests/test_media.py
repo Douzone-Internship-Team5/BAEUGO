@@ -2,21 +2,38 @@ from fastapi.testclient import TestClient
 from sqlalchemy.orm import Session
 
 from app.models.course import Course, Video
+from app.models.learning import Enrollment
+from app.models.user import User
 from app.services.storage import get_media_dir
 from tests.conftest import auth_header
 
 
 def test_media_file_serving(client: TestClient):
     media_dir = get_media_dir()
-    test_file_path = media_dir / "test_thumb.png"
-    test_file_path.write_bytes(b"dummy image bytes")
+    test_file_png = media_dir / "test_thumb.png"
+    test_file_webp = media_dir / "test_thumb.webp"
+    test_file_jpg = media_dir / "test_thumb.jpg"
+
+    test_file_png.write_bytes(b"dummy png bytes")
+    test_file_webp.write_bytes(b"dummy webp bytes")
+    test_file_jpg.write_bytes(b"dummy jpg bytes")
 
     try:
-        # [성공] 이미지 서빙 정상 동작
-        res = client.get("/api/v1/media/test_thumb.png")
-        assert res.status_code == 200
-        assert res.headers["content-type"] == "image/png"
-        assert res.content == b"dummy image bytes"
+        # [성공 1] PNG 이미지 서빙 정상 동작 (image/png)
+        res_png = client.get("/api/v1/media/test_thumb.png")
+        assert res_png.status_code == 200
+        assert res_png.headers["content-type"] == "image/png"
+        assert res_png.content == b"dummy png bytes"
+
+        # [성공 2] WEBP 이미지 서빙 정상 동작 (image/webp)
+        res_webp = client.get("/api/v1/media/test_thumb.webp")
+        assert res_webp.status_code == 200
+        assert res_webp.headers["content-type"] == "image/webp"
+
+        # [성공 3] JPG 이미지 서빙 정상 동작 (image/jpeg)
+        res_jpg = client.get("/api/v1/media/test_thumb.jpg")
+        assert res_jpg.status_code == 200
+        assert res_jpg.headers["content-type"] == "image/jpeg"
 
         # [실패 1] 디렉터리 경로 탐색 (..) 차단 -> 404 NOT_FOUND
         res_traversal = client.get("/api/v1/media/..%2Fsecret.png")
@@ -28,8 +45,9 @@ def test_media_file_serving(client: TestClient):
         assert res_no_file.status_code == 404
         assert res_no_file.json()["error"]["code"] == "NOT_FOUND"
     finally:
-        if test_file_path.exists():
-            test_file_path.unlink()
+        for f in (test_file_png, test_file_webp, test_file_jpg):
+            if f.exists():
+                f.unlink()
 
 
 def test_video_streaming(client: TestClient, db_session: Session):
@@ -53,7 +71,7 @@ def test_video_streaming(client: TestClient, db_session: Session):
     active_vid = Video(
         course_id=course.id,
         video_type="OT",
-        title="활성 영상",
+        title="활성 무료 OT 영상",
         duration_seconds=60,
         video_storage_key="test_stream.mp4",
         is_active=True,
@@ -78,11 +96,11 @@ def test_video_streaming(client: TestClient, db_session: Session):
     db_session.commit()
 
     try:
-        # [성공] 활성 비디오 스트리밍 정상 동작
-        res = client.get(f"/api/v1/videos/{active_vid.id}/stream")
-        assert res.status_code == 200
-        assert res.headers["content-type"] == "video/mp4"
-        assert res.content == b"dummy mp4 video bytes"
+        # [성공 1] 비로그인 상태에서도 무료 OT 영상 스트리밍은 누구나 시청 가능 (200 OK)
+        res_ot_unauth = client.get(f"/api/v1/videos/{active_vid.id}/stream")
+        assert res_ot_unauth.status_code == 200
+        assert res_ot_unauth.headers["content-type"] == "video/mp4"
+        assert res_ot_unauth.content == b"dummy mp4 video bytes"
 
         # [실패 1] 존재하지 않는 videoId -> 404 NOT_FOUND
         res_no_id = client.get("/api/v1/videos/999999/stream")
@@ -101,8 +119,6 @@ def test_video_streaming(client: TestClient, db_session: Session):
 
         # [M-1 권한 검증] LESSON 영상은 비로그인/미수강 학습자 접근 시 403 FORBIDDEN,
         # 담당 강사/수강생은 200 OK
-        from app.models.learning import Enrollment
-
         lesson_vid = Video(
             course_id=course.id,
             video_type="LESSON",
@@ -128,8 +144,6 @@ def test_video_streaming(client: TestClient, db_session: Session):
         assert res_lesson_unenrolled.json()["error"]["code"] == "FORBIDDEN"
 
         # 타 강사(id=99) 요청 -> 403 FORBIDDEN
-        from app.models.user import User
-
         db_session.add(
             User(
                 id=99,

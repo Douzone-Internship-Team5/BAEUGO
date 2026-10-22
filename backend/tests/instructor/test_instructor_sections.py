@@ -3,7 +3,7 @@ from datetime import UTC, datetime
 from fastapi.testclient import TestClient
 from sqlalchemy.orm import Session
 
-from app.models.course import Course, Section
+from app.models.course import Course, Quiz, Section, Video
 
 
 def test_b5_sections_all_cases(client: TestClient, db_session: Session):
@@ -47,11 +47,34 @@ def test_b5_sections_all_cases(client: TestClient, db_session: Session):
     assert res_patch.json()["data"]["title"] == "섹션 1 수정"
     assert res_patch.json()["data"]["sortOrder"] == 10
 
-    # [성공 4] DELETE 섹션 비활성 삭제 (is_active=False)
+    # 하위 영상 및 단위 퀴즈 추가 후 연쇄 비활성화 검증
+    sec_vid = Video(
+        course_id=course.id,
+        section_id=sec1_id,
+        video_type="LESSON",
+        title="섹션 1의 레슨",
+        duration_seconds=100,
+        video_storage_key="test/sec1_vid.mp4",
+        is_active=True,
+    )
+    sec_quiz = Quiz(
+        course_id=course.id,
+        section_id=sec1_id,
+        quiz_type="UNIT",
+        ai_status="COMPLETED",
+        is_active=True,
+    )
+    db_session.add_all([sec_vid, sec_quiz])
+    db_session.commit()
+
+    # [성공 4] DELETE 섹션 비활성 삭제 시 하위 영상 및 퀴즈 연쇄 비활성화 (is_active=False)
     res_del = client.delete(f"/api/v1/instructor/sections/{sec1_id}")
     assert res_del.status_code == 200
     assert res_del.json()["data"]["isActive"] is False
+    db_session.expire_all()
     assert db_session.get(Section, sec1_id).is_active is False
+    assert db_session.get(Video, sec_vid.id).is_active is False
+    assert db_session.get(Quiz, sec_quiz.id).is_active is False
 
     # [실패 1] 타인/미존재 섹션 수정/삭제 시도 -> 404 NOT_FOUND
     res_sec_404 = client.patch("/api/v1/instructor/sections/999999", json={"title": "수정"})
@@ -126,3 +149,11 @@ def test_b5_sections_all_cases(client: TestClient, db_session: Session):
     )
     assert res_bad_sort.status_code == 400
     assert res_bad_sort.json()["error"]["code"] == "VALIDATION_ERROR"
+
+    # [실패 6] PATCH 제목 공백 -> 400 VALIDATION_ERROR
+    res_patch_empty = client.patch(
+        f"/api/v1/instructor/sections/{sec2_id}",
+        json={"title": "   "},
+    )
+    assert res_patch_empty.status_code == 400
+    assert res_patch_empty.json()["error"]["code"] == "VALIDATION_ERROR"
