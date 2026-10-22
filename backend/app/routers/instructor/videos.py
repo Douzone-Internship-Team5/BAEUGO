@@ -3,11 +3,11 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, File, Form, Request, UploadFile
+from fastapi import APIRouter, File, Form, Request, UploadFile
 from sqlalchemy import delete, func, select
 
 from app.core.auth import (
-    get_current_instructor,
+    InstructorUser,
     verify_course_ownership,
     verify_section_ownership,
     verify_video_ownership,
@@ -15,7 +15,6 @@ from app.core.auth import (
 from app.core.database import DbSession
 from app.core.errors import AppError
 from app.models.course import Quiz, Video, VideoScript
-from app.models.user import User
 from app.schemas.common import DataResponse
 from app.schemas.instructor import (
     ScriptRegenerateResponseData,
@@ -39,7 +38,7 @@ router = APIRouter(tags=["instructor-videos"])
 @router.post("/videos", response_model=DataResponse[VideoResponseData], status_code=201)
 def upload_video(
     db: DbSession,
-    current_user: Annotated[User, Depends(get_current_instructor)],
+    current_user: InstructorUser,
     course_id: Annotated[int, Form(alias="courseId")],
     video_type: Annotated[str, Form(alias="videoType")],
     title: Annotated[str, Form(...)],
@@ -160,7 +159,7 @@ async def update_or_replace_video(
     video_id: int,
     request: Request,
     db: DbSession,
-    current_user: Annotated[User, Depends(get_current_instructor)],
+    current_user: InstructorUser,
 ):
     video = verify_video_ownership(video_id, current_user.id, db)
     course = video.course
@@ -334,7 +333,7 @@ async def update_or_replace_video(
 def delete_video(
     video_id: int,
     db: DbSession,
-    current_user: Annotated[User, Depends(get_current_instructor)],
+    current_user: InstructorUser,
 ):
     video = verify_video_ownership(video_id, current_user.id, db)
     course = video.course
@@ -362,7 +361,7 @@ def delete_video(
 def get_video_script(
     video_id: int,
     db: DbSession,
-    current_user: Annotated[User, Depends(get_current_instructor)],
+    current_user: InstructorUser,
 ):
     video = verify_video_ownership(video_id, current_user.id, db)
     segments = [
@@ -390,7 +389,7 @@ def update_video_script(
     video_id: int,
     req: ScriptUpdateRequest,
     db: DbSession,
-    current_user: Annotated[User, Depends(get_current_instructor)],
+    current_user: InstructorUser,
 ):
     video = verify_video_ownership(video_id, current_user.id, db)
     course = video.course
@@ -461,7 +460,7 @@ def update_video_script(
 def regenerate_video_script(
     video_id: int,
     db: DbSession,
-    current_user: Annotated[User, Depends(get_current_instructor)],
+    current_user: InstructorUser,
 ):
     video = verify_video_ownership(video_id, current_user.id, db)
     course = video.course

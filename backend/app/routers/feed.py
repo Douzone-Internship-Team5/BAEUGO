@@ -2,13 +2,12 @@ from __future__ import annotations
 
 import base64
 import json
-from typing import Annotated
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Query
 from sqlalchemy import case, desc, select
 from sqlalchemy.orm import joinedload
 
-from app.core.auth import get_current_user
+from app.core.auth import CurrentUser
 from app.core.database import DbSession
 from app.models.course import Course, Video
 from app.models.learning import Enrollment, VideoLike
@@ -28,7 +27,7 @@ router = APIRouter(prefix="/feed", tags=["feed"])
 @router.get("/ot", response_model=DataResponse[CursorPageData[FeedOtItem]])
 def get_ot_feed(
     db: DbSession,
-    current_user: Annotated[User, Depends(get_current_user)],
+    current_user: CurrentUser,
     cursor: str | None = Query(None, description="다음 페이지 커서"),
     size: int = Query(10, ge=1, le=100),
 ):

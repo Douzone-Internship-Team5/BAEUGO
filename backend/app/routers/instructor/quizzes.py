@@ -3,11 +3,11 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Query
 from sqlalchemy import func, select
 
 from app.core.auth import (
-    get_current_instructor,
+    InstructorUser,
     verify_course_ownership,
     verify_section_ownership,
 )
@@ -15,7 +15,6 @@ from app.core.database import DbSession
 from app.core.errors import AppError
 from app.models.course import Question, QuestionChoice, Quiz
 from app.models.learning import AttemptQuestion, QuestionRecord
-from app.models.user import User
 from app.schemas.common import DataResponse
 from app.schemas.instructor import (
     QuestionItem,
@@ -34,7 +33,7 @@ router = APIRouter(tags=["instructor-quizzes"])
 def get_quiz_detail(
     course_id: int,
     db: DbSession,
-    current_user: Annotated[User, Depends(get_current_instructor)],
+    current_user: InstructorUser,
     section_id: Annotated[
         int | None, Query(alias="sectionId", description="섹션 ID (단위 퀴즈 조회 시 전달)")
     ] = None,
@@ -99,7 +98,7 @@ def update_quiz(
     course_id: int,
     req: QuizUpdateRequest,
     db: DbSession,
-    current_user: Annotated[User, Depends(get_current_instructor)],
+    current_user: InstructorUser,
     section_id: Annotated[int | None, Query(alias="sectionId")] = None,
 ):
     course = verify_course_ownership(course_id, current_user.id, db)
@@ -269,7 +268,7 @@ def update_quiz(
 def regenerate_unit_quiz(
     course_id: int,
     db: DbSession,
-    current_user: Annotated[User, Depends(get_current_instructor)],
+    current_user: InstructorUser,
     section_id: Annotated[
         int, Query(alias="sectionId", description="재생성할 단위 퀴즈의 섹션 ID")
     ],

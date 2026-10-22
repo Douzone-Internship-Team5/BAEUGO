@@ -1,10 +1,7 @@
 from datetime import datetime
 
-from sqlalchemy import BigInteger, DateTime, Integer, func
+from sqlalchemy import DateTime, func
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
-
-# PostgreSQL에서는 BIGINT, SQLite에서는 AUTOINCREMENT가 지원되는 INTEGER로 매핑
-BigIntId = BigInteger().with_variant(Integer, "sqlite")
 
 
 class Base(DeclarativeBase):

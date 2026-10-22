@@ -18,7 +18,7 @@ from sqlalchemy import (
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
-from app.models.base import Base, BigIntId, TimestampMixin
+from app.models.base import Base, TimestampMixin
 
 if TYPE_CHECKING:
     from app.models.course import Course, Question, Video
@@ -31,7 +31,7 @@ class Enrollment(Base, TimestampMixin):
         UniqueConstraint("course_id", "learner_id", name="uq_enrollments_course_learner"),
     )
 
-    id: Mapped[int] = mapped_column(BigIntId, primary_key=True, autoincrement=True)
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
     course_id: Mapped[int] = mapped_column(
         BigInteger, ForeignKey("courses.id", ondelete="CASCADE"), nullable=False, index=True
     )
@@ -66,7 +66,7 @@ class VideoProgress(Base, TimestampMixin):
         UniqueConstraint("enrollment_id", "video_id", name="uq_video_progress_enrollment_video"),
     )
 
-    id: Mapped[int] = mapped_column(BigIntId, primary_key=True, autoincrement=True)
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
     enrollment_id: Mapped[int] = mapped_column(
         BigInteger, ForeignKey("enrollments.id", ondelete="CASCADE"), nullable=False, index=True
     )
@@ -87,10 +87,10 @@ class VideoLike(Base):
     __tablename__ = "video_likes"
 
     user_id: Mapped[int] = mapped_column(
-        BigIntId, ForeignKey("users.id", ondelete="CASCADE"), primary_key=True
+        BigInteger, ForeignKey("users.id", ondelete="CASCADE"), primary_key=True
     )
     video_id: Mapped[int] = mapped_column(
-        BigIntId, ForeignKey("videos.id", ondelete="CASCADE"), primary_key=True
+        BigInteger, ForeignKey("videos.id", ondelete="CASCADE"), primary_key=True
     )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
@@ -104,10 +104,10 @@ class VideoView(Base):
     __tablename__ = "video_views"
 
     user_id: Mapped[int] = mapped_column(
-        BigIntId, ForeignKey("users.id", ondelete="CASCADE"), primary_key=True
+        BigInteger, ForeignKey("users.id", ondelete="CASCADE"), primary_key=True
     )
     video_id: Mapped[int] = mapped_column(
-        BigIntId, ForeignKey("videos.id", ondelete="CASCADE"), primary_key=True
+        BigInteger, ForeignKey("videos.id", ondelete="CASCADE"), primary_key=True
     )
     view_date: Mapped[date] = mapped_column(Date, primary_key=True)
     created_at: Mapped[datetime] = mapped_column(
@@ -118,7 +118,7 @@ class VideoView(Base):
 class QuizAttempt(Base, TimestampMixin):
     __tablename__ = "quiz_attempts"
 
-    id: Mapped[int] = mapped_column(BigIntId, primary_key=True, autoincrement=True)
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
     quiz_id: Mapped[int | None] = mapped_column(
         BigInteger, ForeignKey("quizzes.id", ondelete="SET NULL"), nullable=True, index=True
     )
@@ -144,7 +144,7 @@ class AttemptQuestion(Base, TimestampMixin):
         UniqueConstraint("attempt_id", "order_no", name="uq_attempt_questions_attempt_order"),
     )
 
-    id: Mapped[int] = mapped_column(BigIntId, primary_key=True, autoincrement=True)
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
     attempt_id: Mapped[int] = mapped_column(
         BigInteger, ForeignKey("quiz_attempts.id", ondelete="CASCADE"), nullable=False, index=True
     )
@@ -167,7 +167,7 @@ class AttemptQuestion(Base, TimestampMixin):
 class QuestionAnswer(Base, TimestampMixin):
     __tablename__ = "question_answers"
 
-    id: Mapped[int] = mapped_column(BigIntId, primary_key=True, autoincrement=True)
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
     attempt_question_id: Mapped[int] = mapped_column(
         BigInteger,
         ForeignKey("attempt_questions.id", ondelete="CASCADE"),
@@ -188,7 +188,7 @@ class QuestionRecord(Base, TimestampMixin):
         UniqueConstraint("learner_id", "question_id", name="uq_question_records_learner_question"),
     )
 
-    id: Mapped[int] = mapped_column(BigIntId, primary_key=True, autoincrement=True)
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
     learner_id: Mapped[int] = mapped_column(
         BigInteger, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
     )

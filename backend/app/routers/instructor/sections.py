@@ -1,19 +1,16 @@
 from __future__ import annotations
 
-from typing import Annotated
-
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter
 from sqlalchemy import func, select
 
 from app.core.auth import (
-    get_current_instructor,
+    InstructorUser,
     verify_course_ownership,
     verify_section_ownership,
 )
 from app.core.database import DbSession
 from app.core.errors import AppError
 from app.models.course import Quiz, Section
-from app.models.user import User
 from app.schemas.common import DataResponse
 from app.schemas.instructor import (
     SectionCreateRequest,
@@ -31,7 +28,7 @@ router = APIRouter(tags=["instructor-sections"])
 def create_section(
     req: SectionCreateRequest,
     db: DbSession,
-    current_user: Annotated[User, Depends(get_current_instructor)],
+    current_user: InstructorUser,
 ):
     course = verify_course_ownership(req.course_id, current_user.id, db)
     if course.status not in ("DRAFT", "EDITING"):
@@ -74,7 +71,7 @@ def update_section(
     section_id: int,
     req: SectionUpdateRequest,
     db: DbSession,
-    current_user: Annotated[User, Depends(get_current_instructor)],
+    current_user: InstructorUser,
 ):
     section = verify_section_ownership(section_id, current_user.id, db)
     course = section.course
@@ -112,7 +109,7 @@ def update_section(
 def delete_section(
     section_id: int,
     db: DbSession,
-    current_user: Annotated[User, Depends(get_current_instructor)],
+    current_user: InstructorUser,
 ):
     section = verify_section_ownership(section_id, current_user.id, db)
     course = section.course

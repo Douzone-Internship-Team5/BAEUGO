@@ -17,7 +17,7 @@ from sqlalchemy import (
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
-from app.models.base import Base, BigIntId, TimestampMixin
+from app.models.base import Base, TimestampMixin
 
 if TYPE_CHECKING:
     from app.models.category import Category, Topic
@@ -28,7 +28,7 @@ if TYPE_CHECKING:
 class Course(Base, TimestampMixin):
     __tablename__ = "courses"
 
-    id: Mapped[int] = mapped_column(BigIntId, primary_key=True, autoincrement=True)
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
     instructor_id: Mapped[int] = mapped_column(
         BigInteger, ForeignKey("users.id", ondelete="RESTRICT"), nullable=False, index=True
     )
@@ -82,7 +82,7 @@ class Course(Base, TimestampMixin):
 class Section(Base, TimestampMixin):
     __tablename__ = "sections"
 
-    id: Mapped[int] = mapped_column(BigIntId, primary_key=True, autoincrement=True)
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
     course_id: Mapped[int] = mapped_column(
         BigInteger, ForeignKey("courses.id", ondelete="CASCADE"), nullable=False, index=True
     )
@@ -109,7 +109,7 @@ class Section(Base, TimestampMixin):
 class Video(Base, TimestampMixin):
     __tablename__ = "videos"
 
-    id: Mapped[int] = mapped_column(BigIntId, primary_key=True, autoincrement=True)
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
     course_id: Mapped[int] = mapped_column(
         BigInteger, ForeignKey("courses.id", ondelete="CASCADE"), nullable=False, index=True
     )
@@ -146,7 +146,7 @@ class VideoScript(Base, TimestampMixin):
     __tablename__ = "video_scripts"
     __table_args__ = (UniqueConstraint("video_id", "seq", name="uq_video_scripts_video_seq"),)
 
-    id: Mapped[int] = mapped_column(BigIntId, primary_key=True, autoincrement=True)
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
     video_id: Mapped[int] = mapped_column(
         BigInteger, ForeignKey("videos.id", ondelete="CASCADE"), nullable=False, index=True
     )
@@ -161,7 +161,7 @@ class VideoScript(Base, TimestampMixin):
 class Quiz(Base, TimestampMixin):
     __tablename__ = "quizzes"
 
-    id: Mapped[int] = mapped_column(BigIntId, primary_key=True, autoincrement=True)
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
     course_id: Mapped[int] = mapped_column(
         BigInteger, ForeignKey("courses.id", ondelete="CASCADE"), nullable=False, index=True
     )
@@ -192,7 +192,7 @@ class Question(Base, TimestampMixin):
     __tablename__ = "questions"
     __table_args__ = (UniqueConstraint("quiz_id", "order_no", name="uq_questions_quiz_order"),)
 
-    id: Mapped[int] = mapped_column(BigIntId, primary_key=True, autoincrement=True)
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
     quiz_id: Mapped[int] = mapped_column(
         BigInteger, ForeignKey("quizzes.id", ondelete="CASCADE"), nullable=False, index=True
     )
@@ -220,7 +220,7 @@ class QuestionChoice(Base, TimestampMixin):
         UniqueConstraint("question_id", "choice_no", name="uq_question_choices_question_choice"),
     )
 
-    id: Mapped[int] = mapped_column(BigIntId, primary_key=True, autoincrement=True)
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
     question_id: Mapped[int] = mapped_column(
         BigInteger, ForeignKey("questions.id", ondelete="CASCADE"), nullable=False, index=True
     )
@@ -236,7 +236,7 @@ class CourseDailyStat(Base, TimestampMixin):
         UniqueConstraint("course_id", "start_date", name="uq_course_daily_stats_course_date"),
     )
 
-    id: Mapped[int] = mapped_column(BigIntId, primary_key=True, autoincrement=True)
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
     course_id: Mapped[int] = mapped_column(
         BigInteger, ForeignKey("courses.id", ondelete="CASCADE"), nullable=False, index=True
     )

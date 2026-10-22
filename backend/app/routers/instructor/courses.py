@@ -1,21 +1,20 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from typing import Annotated, Any
+from typing import Any
 
-from fastapi import APIRouter, Depends, Query, Request, UploadFile
+from fastapi import APIRouter, Query, Request, UploadFile
 from sqlalchemy import desc, func, select
 from sqlalchemy.orm import selectinload
 
 from app.core.auth import (
-    get_current_instructor,
+    InstructorUser,
     verify_course_ownership,
 )
 from app.core.database import DbSession
 from app.core.errors import AppError
 from app.models.category import Category, Topic
 from app.models.course import Course, Question, Quiz, Section
-from app.models.user import User
 from app.schemas.common import DataResponse
 from app.schemas.instructor import (
     CourseCounts,
@@ -72,7 +71,7 @@ def _parse_int_field(val: Any, field_name: str) -> int:
 @router.get("/courses", response_model=DataResponse[InstructorCourseListResponseData])
 def list_my_courses(
     db: DbSession,
-    current_user: Annotated[User, Depends(get_current_instructor)],
+    current_user: InstructorUser,
     status: str | None = Query(None, description="강좌 상태 필터"),
     page: int = Query(1, ge=1),
     size: int = Query(20, ge=1, le=100),
@@ -167,7 +166,7 @@ def list_my_courses(
 def get_course_detail_for_edit(
     course_id: int,
     db: DbSession,
-    current_user: Annotated[User, Depends(get_current_instructor)],
+    current_user: InstructorUser,
 ):
     course = db.scalar(
         select(Course)
@@ -302,7 +301,7 @@ def get_course_detail_for_edit(
 async def create_course(
     request: Request,
     db: DbSession,
-    current_user: Annotated[User, Depends(get_current_instructor)],
+    current_user: InstructorUser,
 ):
     content_type = request.headers.get("content-type", "")
     thumbnail: UploadFile | None = None
@@ -420,7 +419,7 @@ async def update_course(
     course_id: int,
     request: Request,
     db: DbSession,
-    current_user: Annotated[User, Depends(get_current_instructor)],
+    current_user: InstructorUser,
 ):
     course = verify_course_ownership(course_id, current_user.id, db)
 
@@ -531,7 +530,7 @@ async def update_course(
 def delete_course(
     course_id: int,
     db: DbSession,
-    current_user: Annotated[User, Depends(get_current_instructor)],
+    current_user: InstructorUser,
 ):
     course = verify_course_ownership(course_id, current_user.id, db)
 
@@ -561,7 +560,7 @@ def update_course_status(
     course_id: int,
     req: CourseStatusUpdateRequest,
     db: DbSession,
-    current_user: Annotated[User, Depends(get_current_instructor)],
+    current_user: InstructorUser,
 ):
     course = db.scalar(
         select(Course)

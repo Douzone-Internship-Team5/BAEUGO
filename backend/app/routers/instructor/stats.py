@@ -5,17 +5,16 @@ from datetime import UTC, date, datetime, timedelta, timezone
 from typing import Annotated
 from zoneinfo import ZoneInfo
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Query
 from sqlalchemy import select
 
 from app.core.auth import (
-    get_current_instructor,
+    InstructorUser,
     verify_course_ownership,
 )
 from app.core.database import DbSession
 from app.core.errors import AppError
 from app.models.course import Course, CourseDailyStat
-from app.models.user import User
 from app.schemas.common import DataResponse
 from app.schemas.instructor import (
     CourseStatItem,
@@ -55,7 +54,7 @@ def _to_kst_date(dt: datetime) -> date:
 @router.get("/stats", response_model=DataResponse[InstructorStatsResponseData])
 def get_instructor_stats(
     db: DbSession,
-    current_user: Annotated[User, Depends(get_current_instructor)],
+    current_user: InstructorUser,
     course_id: Annotated[int | None, Query(alias="courseId")] = None,
     from_date: Annotated[date | None, Query(alias="from")] = None,
     to_date: Annotated[date | None, Query(alias="to")] = None,

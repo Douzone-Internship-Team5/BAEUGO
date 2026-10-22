@@ -1,4 +1,4 @@
-from app.models.base import Base, BigIntId, TimestampMixin
+from app.models.base import Base, TimestampMixin
 from app.models.category import Category, Topic
 from app.models.course import (
     Course,
@@ -32,7 +32,6 @@ __all__ = [
     "AccountType",
     "AttemptQuestion",
     "Base",
-    "BigIntId",
     "Category",
     "Course",
     "CourseDailyStat",
