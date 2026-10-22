@@ -44,6 +44,23 @@ docker compose up --build
 - API 문서: http://localhost:8000/docs
 - 컨테이너가 뜰 때 `alembic upgrade head`가 자동 실행됨
 
+### 3. 시드 데이터 (목업 계정, 직무·주제)
+
+```bash
+docker compose exec api python -m app.seed
+```
+
+- 없는 데이터만 넣으므로 여러 번 실행해도 중복되지 않는다
+- 목업 계정 비밀번호는 모두 `baeugo1234`
+
+| 이메일 | 상태 |
+| --- | --- |
+| learner1@baeugo.test | 일반 회원, 역할 없음 (역할 선택·온보딩 시연) |
+| learner2@baeugo.test | 수강자, 온보딩 완료 |
+| instructor1@baeugo.test | 강사, 온보딩 완료 |
+| instructor2@baeugo.test | 강사, 온보딩 완료 |
+| admin@baeugo.test | 운영자 |
+
 ### Docker 없이 백엔드만 실행할 때
 
 ```bash
@@ -52,8 +69,22 @@ python -m venv .venv
 source .venv/bin/activate        # Windows: .venv\Scripts\activate
 pip install -r requirements-dev.txt
 alembic upgrade head
+python -m app.seed
 uvicorn app.main:app --reload
 ```
+
+- Docker의 DB는 호스트 `5433` 포트로 열린다 (PC에 설치된 PostgreSQL의 5432와 겹치지 않게)
+
+## 테스트·린트
+
+PR 전에 컨테이너 안에서 실행한다 (CI 없음).
+
+```bash
+docker compose exec api sh -c "ruff check . && ruff format --check . && python -m pytest -q"
+```
+
+- DB가 필요한 테스트는 `<DB 이름>_test` DB(기본 `baeugo_test`)를 자동으로 만들어 쓴다. 개발 DB는 건드리지 않는다
+- 다른 DB로 테스트하려면 `TEST_DATABASE_URL`을 지정한다
 
 ## DB 마이그레이션
 

@@ -9,7 +9,7 @@ class Settings(BaseSettings):
     app_name: str = "BAEUGO API"
     api_prefix: str = "/api/v1"
 
-    database_url: str = "postgresql+psycopg://baeugo:baeugo@localhost:5432/baeugo"
+    database_url: str = "postgresql+psycopg://baeugo:baeugo@localhost:5433/baeugo"
 
     jwt_secret_key: str = "change-me"
     jwt_expire_minutes: int = 60 * 24
