@@ -17,8 +17,13 @@ def get_media_dir() -> Path:
 
 def save_upload_file(file: UploadFile, relative_dir: str, filename_prefix: str = "") -> str:
     """파일을 media_root 내부 relative_dir에 저장하고 상대 경로(storage_key)를 반환한다."""
+    # 경로 순회(Path Traversal) 공격 방어
+    clean_dir = Path(relative_dir).as_posix().lstrip("/\\")
+    if ".." in clean_dir:
+        clean_dir = "uploads"
+
     media_dir = get_media_dir()
-    target_dir = media_dir / relative_dir
+    target_dir = media_dir / clean_dir
     target_dir.mkdir(parents=True, exist_ok=True)
 
     ext = Path(file.filename or "").suffix.lower()
@@ -28,11 +33,12 @@ def save_upload_file(file: UploadFile, relative_dir: str, filename_prefix: str =
     unique_name = f"{filename_prefix}_{uuid4().hex[:8]}{ext}" if filename_prefix else f"{uuid4().hex[:8]}{ext}"
     target_file = target_dir / unique_name
 
+    file.file.seek(0)
     with target_file.open("wb") as buffer:
         shutil.copyfileobj(file.file, buffer)
 
     # 상대 키 경로 반환 (예: courses/101/thumb.jpg)
-    return f"{relative_dir.strip('/')}/{unique_name}"
+    return f"{clean_dir.strip('/')}/{unique_name}"
 
 
 def get_thumbnail_url(storage_key: str | None) -> str | None:
