@@ -95,27 +95,46 @@ def recalculate_enrollments_progress(course: Course, db: Session) -> None:
     enrollments = db.scalars(
         select(Enrollment).where(Enrollment.course_id == course.id)
     ).all()
+    if not enrollments:
+        return
 
-    for enr in enrollments:
-        # 완료된 활성 영상 개수
-        completed_videos_cnt = db.scalar(
-            select(func.count(VideoProgress.id)).where(
-                VideoProgress.enrollment_id == enr.id,
+    enrollment_ids = [e.id for e in enrollments]
+    learner_ids = [e.learner_id for e in enrollments]
+
+    # 1. 수강생별 완료된 활성 영상 개수 일괄 집계 (1회 쿼리)
+    video_counts: dict[int, int] = {}
+    if active_lesson_ids:
+        raw_video_counts = db.execute(
+            select(VideoProgress.enrollment_id, func.count(VideoProgress.id))
+            .where(
+                VideoProgress.enrollment_id.in_(enrollment_ids),
                 VideoProgress.video_id.in_(active_lesson_ids),
                 VideoProgress.is_completed.is_(True),
             )
-        ) or 0
+            .group_by(VideoProgress.enrollment_id)
+        ).all()
+        video_counts = {eid: cnt for eid, cnt in raw_video_counts}
 
-        # 제출 완료된 활성 퀴즈 개수
-        submitted_quizzes_cnt = db.scalar(
-            select(func.count(func.distinct(QuizAttempt.quiz_id))).where(
-                QuizAttempt.learner_id == enr.learner_id,
+    # 2. 수강생별 제출 완료된 활성 퀴즈 개수 일괄 집계 (1회 쿼리)
+    quiz_counts: dict[int, int] = {}
+    if active_quiz_ids:
+        raw_quiz_counts = db.execute(
+            select(QuizAttempt.learner_id, func.count(func.distinct(QuizAttempt.quiz_id)))
+            .where(
+                QuizAttempt.learner_id.in_(learner_ids),
                 QuizAttempt.quiz_id.in_(active_quiz_ids),
                 QuizAttempt.status == "SUBMITTED",
             )
-        ) or 0
+            .group_by(QuizAttempt.learner_id)
+        ).all()
+        quiz_counts = {lid: cnt for lid, cnt in raw_quiz_counts}
 
+    # 3. 인메모리 매핑으로 상태 일괄 갱신 (반복 쿼리 제거)
+    for enr in enrollments:
+        completed_videos_cnt = video_counts.get(enr.id, 0)
+        submitted_quizzes_cnt = quiz_counts.get(enr.learner_id, 0)
         completed_items = completed_videos_cnt + submitted_quizzes_cnt
+
         if completed_items < total_items_count:
             if enr.status == "COMPLETED":
                 enr.status = "IN_PROGRESS"
