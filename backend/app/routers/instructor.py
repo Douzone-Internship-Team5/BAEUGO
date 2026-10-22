@@ -6,7 +6,7 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, File, Form, Header, Query, UploadFile
 from sqlalchemy import delete, desc, func, select
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, selectinload
 
 from app.core.auth import (
     get_current_instructor,
@@ -108,12 +108,21 @@ def list_my_courses(
         OPERATOR_HIDDEN=count_map.get("OPERATOR_HIDDEN", 0),
     )
 
-    # 2. 강좌 목록 쿼리
-    query = select(Course).where(Course.instructor_id == current_user.id)
+    # 2. 강좌 목록 쿼리 (N+1 쿼리 방지를 위한 eager loading 적용)
+    query = (
+        select(Course)
+        .where(Course.instructor_id == current_user.id)
+        .options(
+            selectinload(Course.sections),
+            selectinload(Course.videos),
+            selectinload(Course.quizzes),
+            selectinload(Course.enrollments),
+        )
+    )
     if status is not None:
         query = query.where(Course.status == status)
 
-    total = db.scalar(select(func.count()).select_from(query.subquery())) or 0
+    total = db.scalar(select(func.count()).select_from(query.order_by(None).subquery())) or 0
     courses = db.scalars(query.order_by(desc(Course.id)).offset((page - 1) * size).limit(size)).all()
 
     items: list[InstructorCourseItem] = []
@@ -619,6 +628,11 @@ def upload_video(
 
     if videoType == "LESSON" and sectionId is None:
         raise AppError(400, "VALIDATION_ERROR", "학습 영상(LESSON)은 sectionId가 필수입니다.")
+
+    # 영상 파일 최대 200MB 검증
+    MAX_VIDEO_SIZE = 200 * 1024 * 1024
+    if file.size and file.size > MAX_VIDEO_SIZE:
+        raise AppError(400, "INVALID_FILE", "재생할 수 없거나 200MB를 초과한 영상 파일입니다.")
 
     if sectionId is not None:
         verify_section_ownership(sectionId, current_user.id, db)

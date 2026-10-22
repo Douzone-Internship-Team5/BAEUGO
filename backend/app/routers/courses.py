@@ -4,6 +4,7 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, Header, Query
 from sqlalchemy import case, desc, func, or_, select
+from sqlalchemy.orm import joinedload, selectinload
 
 from app.core.auth import get_optional_current_user
 from app.core.database import DbSession
@@ -109,18 +110,31 @@ def search_courses(
             )
         ).all() if current_user else []
 
-        topic_score = case(
-            (Course.topic_id.in_(interest_topics), 2),
-            else_=0,
-        ) if interest_topics else 0
-        cat_score = case(
-            (Course.category_id == target_category_id, 1),
-            else_=0,
-        ) if target_category_id else 0
+        rec_clauses = []
+        if interest_topics or target_category_id:
+            topic_score = (
+                case((Course.topic_id.in_(interest_topics), 2), else_=0)
+                if interest_topics
+                else 0
+            )
+            cat_score = (
+                case((Course.category_id == target_category_id, 1), else_=0)
+                if target_category_id
+                else 0
+            )
+            rec_clauses.append(desc(topic_score + cat_score))
+        rec_clauses.append(desc(Course.id))
+        query = query.order_by(*rec_clauses)
 
-        query = query.order_by(desc(topic_score + cat_score), desc(Course.id))
+    # N+1 방지를 위한 eager loading 옵션 추가
+    query = query.options(
+        joinedload(Course.instructor),
+        joinedload(Course.category),
+        joinedload(Course.topic),
+        selectinload(Course.enrollments),
+    )
 
-    courses = db.scalars(query.offset((page - 1) * size).limit(size)).all()
+    courses = db.scalars(query.offset((page - 1) * size).limit(size)).unique().all()
 
     items: list[CourseSearchItem] = []
     for c in courses:
