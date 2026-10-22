@@ -10,11 +10,6 @@ venv/
 .pytest_cache/
 .ruff_cache/
 
-# Node / Next.js
-node_modules/
-.next/
-out/
-
 # 업로드 파일 (로컬 실행 시)
 media/
 
@@ -24,3 +19,7 @@ media/
 .vscode/*
 !.vscode/settings.json
 !.vscode/extensions.json
+
+# 개인 작업 파일
+CLAUDE.md
+.local/
