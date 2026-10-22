@@ -1,3 +1,5 @@
+from typing import Any
+
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
@@ -61,18 +63,27 @@ class AppError(Exception):
         status_code: int,
         code: str,
         message: str,
-        fields: dict[str, str] | None = None,
+        fields: dict[str, Any] | None = None,
+        missing: list[str] | None = None,
     ):
         self.status_code = status_code
         self.code = code
         self.message = message
         self.fields = fields
+        self.missing = missing
 
 
-def error_body(code: str, message: str, fields: dict[str, str] | None = None) -> dict:
-    error: dict = {"code": code, "message": message}
-    if fields:
+def error_body(
+    code: str,
+    message: str,
+    fields: dict[str, Any] | None = None,
+    missing: list[str] | None = None,
+) -> dict:
+    error: dict[str, Any] = {"code": code, "message": message}
+    if fields is not None:
         error["fields"] = fields
+    if missing is not None:
+        error["missing"] = missing
     return {"error": error}
 
 
@@ -81,7 +92,7 @@ def register_error_handlers(app: FastAPI) -> None:
     async def handle_app_error(_: Request, exc: AppError) -> JSONResponse:
         return JSONResponse(
             status_code=exc.status_code,
-            content=error_body(exc.code, exc.message, exc.fields),
+            content=error_body(exc.code, exc.message, exc.fields, exc.missing),
         )
 
     @app.exception_handler(RequestValidationError)
