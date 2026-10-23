@@ -14,9 +14,10 @@ from app.core.auth import (
 )
 from app.core.database import DbSession
 from app.core.errors import AppError
-from app.models.course import Course, CourseDailyStat
+from app.models.course import Course
+from app.models.stat import CourseDailyStat
 from app.schemas.common import DataResponse
-from app.schemas.instructor import (
+from app.schemas.stats import (
     CourseStatItem,
     DailyStatItem,
     InstructorStatsResponseData,

@@ -9,12 +9,13 @@ from sqlalchemy.orm import joinedload
 
 from app.core.auth import CurrentUser
 from app.core.database import DbSession
-from app.models.course import Course, Video
-from app.models.learning import Enrollment, VideoLike
+from app.models.course import Course
+from app.models.learning import Enrollment
 from app.models.profile import LearnerTopicInterest
 from app.models.user import User
+from app.models.video import Video, VideoLike
 from app.schemas.common import CursorPageData, DataResponse
-from app.schemas.course import FeedCourseInfo, FeedInstructorInfo, FeedOtItem
+from app.schemas.feed import FeedCourseInfo, FeedInstructorInfo, FeedOtItem
 from app.services.storage import (
     get_profile_image_url,
     get_thumbnail_url,

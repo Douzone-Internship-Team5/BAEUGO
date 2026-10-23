@@ -15,13 +15,16 @@ from app.core.auth import (
 )
 from app.core.database import DbSession
 from app.core.errors import AppError
-from app.models.course import Quiz, Video, VideoScript
+from app.models.quiz import Quiz
+from app.models.video import Video, VideoScript
 from app.schemas.common import DataResponse
-from app.schemas.instructor import (
+from app.schemas.script import (
     ScriptRegenerateResponseData,
     ScriptResponseData,
     ScriptSegment,
     ScriptUpdateRequest,
+)
+from app.schemas.video import (
     VideoDeleteResponseData,
     VideoResponseData,
 )

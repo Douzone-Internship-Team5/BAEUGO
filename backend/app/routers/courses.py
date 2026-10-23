@@ -13,7 +13,7 @@ from app.models.course import Course
 from app.models.learning import Enrollment
 from app.models.profile import LearnerTopicInterest
 from app.schemas.common import DataResponse, PageData
-from app.schemas.course import CategorySimple, CourseSearchItem, TopicSimple
+from app.schemas.search import CategorySimple, CourseSearchItem, TopicSimple
 from app.services.storage import get_thumbnail_url
 
 router = APIRouter(prefix="/courses", tags=["courses"])

@@ -10,9 +10,10 @@ from app.core.auth import (
 )
 from app.core.database import DbSession
 from app.core.errors import AppError
-from app.models.course import Quiz, Section
+from app.models.course import Section
+from app.models.quiz import Quiz
 from app.schemas.common import DataResponse
-from app.schemas.instructor import (
+from app.schemas.section import (
     SectionCreateRequest,
     SectionDeleteResponseData,
     SectionResponseData,

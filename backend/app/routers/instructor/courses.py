@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from typing import Any
 
-from fastapi import APIRouter, Query, Request, UploadFile
+from fastapi import APIRouter, Query, UploadFile
 from sqlalchemy import desc, func, select
 from sqlalchemy.orm import selectinload
 
@@ -14,14 +14,17 @@ from app.core.auth import (
 from app.core.database import DbSession
 from app.core.errors import AppError
 from app.models.category import Category, Topic
-from app.models.course import Course, Question, Quiz, Section
+from app.models.course import Course, Section
+from app.models.quiz import Question, Quiz
 from app.schemas.common import DataResponse
-from app.schemas.instructor import (
+from app.schemas.course import (
     CourseCounts,
+    CourseCreateRequest,
     CourseDeleteResponseData,
     CourseMutationResponseData,
     CourseStatusUpdateRequest,
     CourseStatusUpdateResponseData,
+    CourseUpdateRequest,
     InstructorCourseDetail,
     InstructorCourseItem,
     InstructorCourseListResponseData,
@@ -299,7 +302,7 @@ def get_course_detail_for_edit(
 # ==========================================
 @router.post("/courses", response_model=DataResponse[CourseMutationResponseData], status_code=201)
 async def create_course(
-    request: Request,
+    request: CourseCreateRequest,
     db: DbSession,
     current_user: InstructorUser,
 ):
@@ -417,7 +420,7 @@ async def create_course(
 @router.patch("/courses/{course_id}", response_model=DataResponse[CourseMutationResponseData])
 async def update_course(
     course_id: int,
-    request: Request,
+    request: CourseUpdateRequest,
     db: DbSession,
     current_user: InstructorUser,
 ):
@@ -611,6 +614,7 @@ def update_course_status(
                 course_id=course.id,
                 status="PUBLISHED",
                 published_at=course.published_at,
+                closed_by_user_id=None,
                 closed_at=None,
             )
         )

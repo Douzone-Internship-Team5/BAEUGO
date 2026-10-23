@@ -13,10 +13,10 @@ from app.core.auth import (
 )
 from app.core.database import DbSession
 from app.core.errors import AppError
-from app.models.course import Question, QuestionChoice, Quiz
 from app.models.learning import AttemptQuestion, QuestionRecord
+from app.models.quiz import Question, QuestionChoice, Quiz
 from app.schemas.common import DataResponse
-from app.schemas.instructor import (
+from app.schemas.quiz import (
     QuestionItem,
     QuizDetailResponseData,
     QuizRegenerateResponseData,
@@ -63,7 +63,10 @@ def get_quiz_detail(
     if not quiz:
         raise AppError(404, "NOT_FOUND", "강좌 또는 섹션을 찾을 수 없습니다.")
 
-    active_questions = [q for q in quiz.questions if q.is_active]
+    active_questions = sorted(
+        [q for q in quiz.questions if q.is_active],
+        key=lambda x: x.order_no,
+    )
     question_dtos: list[QuestionItem] = []
     for q in active_questions:
         choices = [c.content for c in sorted(q.choices, key=lambda x: x.choice_no)]
