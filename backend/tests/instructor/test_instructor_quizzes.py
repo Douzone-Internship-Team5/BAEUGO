@@ -4,7 +4,13 @@ from fastapi.testclient import TestClient
 from sqlalchemy.orm import Session
 
 from app.models.course import Course, Question, QuestionChoice, Quiz, Section
-from app.models.learning import AttemptQuestion, QuizAttempt
+from app.models.learning import (
+    AttemptQuestion,
+    Enrollment,
+    QuestionAnswer,
+    QuestionRecord,
+    QuizAttempt,
+)
 
 
 def test_b8_quizzes_crud_and_validation(client: TestClient, db_session: Session):
@@ -346,9 +352,13 @@ def test_question_order_negation_on_update(client: TestClient, db_session: Sessi
             db_session.add(QuestionChoice(question_id=q.id, choice_no=c_no, content=f"보기 {c_no}"))
 
     # 수강생의 시도 이력(attempt_questions) 생성
+    enr = Enrollment(course_id=course.id, learner_id=2)
+    db_session.add(enr)
+    db_session.flush()
+
     attempt = QuizAttempt(
         quiz_id=quiz.id,
-        learner_id=2,
+        enrollment_id=enr.id,
         attempt_type="FINAL",
         status="SUBMITTED",
     )
@@ -385,8 +395,6 @@ def test_question_order_negation_on_update(client: TestClient, db_session: Sessi
 def test_b8_cross_course_section_and_question_record_preservation(
     client: TestClient, db_session: Session
 ):
-    from app.models.learning import QuestionRecord
-
     c1 = Course(
         instructor_id=6,
         category_id=1,
@@ -465,11 +473,41 @@ def test_b8_cross_course_section_and_question_record_preservation(
             QuestionChoice(question_id=q_rec_target.id, choice_no=c_no, content=f"보기 {c_no}")
         )
 
+    enr_c1 = Enrollment(course_id=c1.id, learner_id=2)
+    db_session.add(enr_c1)
+    db_session.flush()
+
+    attempt_c1 = QuizAttempt(
+        quiz_id=quiz.id,
+        enrollment_id=enr_c1.id,
+        attempt_type="FINAL",
+        status="SUBMITTED",
+    )
+    db_session.add(attempt_c1)
+    db_session.flush()
+
+    att_q_c1 = AttemptQuestion(
+        attempt_id=attempt_c1.id,
+        question_id=q_rec_target.id,
+        order_no=1,
+    )
+    db_session.add(att_q_c1)
+    db_session.flush()
+
+    ans_c1 = QuestionAnswer(
+        attempt_question_id=att_q_c1.id,
+        selected_choice_no=2,
+        is_correct=False,
+    )
+    db_session.add(ans_c1)
+    db_session.flush()
+
     db_session.add(
         QuestionRecord(
-            learner_id=2,
+            enrollment_id=enr_c1.id,
             question_id=q_rec_target.id,
             status="REVIEW_NEEDED",
+            last_answer_id=ans_c1.id,
             wrong_count=1,
         )
     )
@@ -484,3 +522,57 @@ def test_b8_cross_course_section_and_question_record_preservation(
     assert preserved is not None
     assert preserved.is_active is False
     assert preserved.order_no == -int(target_qid)
+
+
+def test_attempt_questions_unique_constraint(db_session: Session):
+    import pytest
+    from sqlalchemy.exc import IntegrityError
+
+    from app.models.learning import AttemptQuestion, Enrollment, QuizAttempt
+
+    course = Course(
+        instructor_id=6,
+        category_id=1,
+        topic_id=11,
+        title="제약조건 테스트 강좌",
+        description="설명",
+        difficulty="BEGINNER",
+        price_krw=0,
+        status="DRAFT",
+    )
+    db_session.add(course)
+    db_session.flush()
+
+    quiz = Quiz(course_id=course.id, quiz_type="FINAL", is_active=True)
+    db_session.add(quiz)
+    db_session.flush()
+
+    q1 = Question(
+        quiz_id=quiz.id,
+        order_no=1,
+        content="문제 1",
+        explanation="해설 1",
+        correct_choice_no=1,
+        is_active=True,
+    )
+    db_session.add(q1)
+    enr = Enrollment(course_id=course.id, learner_id=2, status="IN_PROGRESS")
+    db_session.add(enr)
+    db_session.flush()
+
+    attempt = QuizAttempt(quiz_id=quiz.id, enrollment_id=enr.id, attempt_type="FINAL")
+    db_session.add(attempt)
+    db_session.flush()
+
+    # 첫 출제 등록 (order_no=1)
+    aq1 = AttemptQuestion(attempt_id=attempt.id, question_id=q1.id, order_no=1)
+    db_session.add(aq1)
+    db_session.commit()
+
+    # 동일 attempt에 동일 question_id를 다른 order_no(2)로 등록 시도시
+    # uq_attempt_questions_attempt_question 제약조건 위반 검증
+    aq2 = AttemptQuestion(attempt_id=attempt.id, question_id=q1.id, order_no=2)
+    db_session.add(aq2)
+    with pytest.raises(IntegrityError):
+        db_session.commit()
+    db_session.rollback()

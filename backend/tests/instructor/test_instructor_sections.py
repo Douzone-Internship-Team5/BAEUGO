@@ -70,7 +70,11 @@ def test_b5_sections_all_cases(client: TestClient, db_session: Session):
     # [성공 4] DELETE 섹션 비활성 삭제 시 하위 영상 및 퀴즈 연쇄 비활성화 (is_active=False)
     res_del = client.delete(f"/api/v1/instructor/sections/{sec1_id}")
     assert res_del.status_code == 200
-    assert res_del.json()["data"]["isActive"] is False
+    assert res_del.json()["data"] == {
+        "sectionId": sec1_id,
+        "courseId": course.id,
+        "isActive": False,
+    }
     db_session.expire_all()
     assert db_session.get(Section, sec1_id).is_active is False
     assert db_session.get(Video, sec_vid.id).is_active is False

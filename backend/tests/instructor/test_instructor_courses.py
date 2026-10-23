@@ -452,6 +452,10 @@ def test_b4_course_status_transitions(client: TestClient, db_session: Session):
     assert res_edit.status_code == 200
     assert res_edit.json()["data"]["status"] == "EDITING"
     assert res_edit.json()["data"]["closedByUserId"] == 6
+    db_session.expire_all()
+    editing_c = db_session.get(Course, course.id)
+    assert editing_c.closed_reason is None
+    assert editing_c.closed_at is not None
 
     # [실패 5] OPERATOR_HIDDEN 상태 강좌를 강사가 임의로 PUBLISHED/EDITING 전환 시도 -> 409 CONFLICT
     hidden_course = Course(
@@ -484,7 +488,14 @@ def test_b4_course_status_transitions(client: TestClient, db_session: Session):
 def test_b2_b4_multiple_unit_quizzes_and_enrollment_recalculation(
     client: TestClient, db_session: Session
 ):
-    from app.models.learning import Enrollment, QuestionRecord, QuizAttempt, VideoProgress
+    from app.models.learning import (
+        AttemptQuestion,
+        Enrollment,
+        QuestionAnswer,
+        QuestionRecord,
+        QuizAttempt,
+        VideoProgress,
+    )
 
     course = Course(
         instructor_id=6,
@@ -594,26 +605,42 @@ def test_b2_b4_multiple_unit_quizzes_and_enrollment_recalculation(
     db_session.flush()
 
     db_session.add(VideoProgress(enrollment_id=enr.id, video_id=lesson.id, is_completed=True))
-    db_session.add_all(
-        [
-            QuizAttempt(
-                quiz_id=active_unit_q.id,
-                learner_id=2,
-                attempt_type="UNIT",
-                status="SUBMITTED",
-            ),
-            QuizAttempt(
-                quiz_id=final_q.id,
-                learner_id=2,
-                attempt_type="FINAL",
-                status="SUBMITTED",
-            ),
-        ]
+    att1 = QuizAttempt(
+        quiz_id=active_unit_q.id,
+        enrollment_id=enr.id,
+        attempt_type="UNIT",
+        status="SUBMITTED",
     )
+    att2 = QuizAttempt(
+        quiz_id=final_q.id,
+        enrollment_id=enr.id,
+        attempt_type="FINAL",
+        status="SUBMITTED",
+    )
+    db_session.add_all([att1, att2])
+    db_session.flush()
+
+    att_q = AttemptQuestion(
+        attempt_id=att1.id,
+        question_id=active_questions[0].id,
+        order_no=1,
+    )
+    db_session.add(att_q)
+    db_session.flush()
+
+    ans = QuestionAnswer(
+        attempt_question_id=att_q.id,
+        selected_choice_no=2,
+        is_correct=False,
+    )
+    db_session.add(ans)
+    db_session.flush()
+
     q_rec = QuestionRecord(
-        learner_id=2,
+        enrollment_id=enr.id,
         question_id=active_questions[0].id,
         status="REVIEW_NEEDED",
+        last_answer_id=ans.id,
         wrong_count=1,
     )
     db_session.add(q_rec)
@@ -743,3 +770,122 @@ def test_b3_course_json_and_strict_validation(client: TestClient, db_session: Se
     )
     assert res_empty_thumb.status_code == 400
     assert res_empty_thumb.json()["error"]["code"] == "INVALID_FILE"
+
+
+def test_enrollment_id_based_recalculation(db_session: Session):
+    from app.models.course import Course, Question, QuestionChoice, Quiz, Section, Video
+    from app.models.learning import (
+        AttemptQuestion,
+        Enrollment,
+        QuestionAnswer,
+        QuestionRecord,
+        QuizAttempt,
+        VideoProgress,
+    )
+    from app.services.course_service import recalculate_enrollments_progress
+
+    course = Course(
+        instructor_id=6,
+        category_id=1,
+        topic_id=11,
+        title="수강생 격리 재계산 강좌",
+        description="설명",
+        difficulty="BEGINNER",
+        price_krw=0,
+        status="PUBLISHED",
+    )
+    db_session.add(course)
+    db_session.flush()
+
+    sec = Section(course_id=course.id, title="섹션", sort_order=1, is_active=True)
+    db_session.add(sec)
+    db_session.flush()
+
+    lesson = Video(
+        course_id=course.id,
+        section_id=sec.id,
+        video_type="LESSON",
+        title="1강",
+        duration_seconds=60,
+        video_storage_key="k1",
+        is_active=True,
+    )
+    db_session.add(lesson)
+
+    quiz = Quiz(course_id=course.id, section_id=sec.id, quiz_type="UNIT", is_active=True)
+    db_session.add(quiz)
+    db_session.flush()
+
+    q1 = Question(
+        quiz_id=quiz.id,
+        order_no=1,
+        content="문제",
+        explanation="해설",
+        correct_choice_no=1,
+        is_active=True,
+    )
+    db_session.add(q1)
+    db_session.flush()
+    for c_no in range(1, 5):
+        db_session.add(QuestionChoice(question_id=q1.id, choice_no=c_no, content=f"보기 {c_no}"))
+
+    # Learner A (id=2), Learner B (id=3), Learner C (id=4)
+    enr_a = Enrollment(course_id=course.id, learner_id=2, status="IN_PROGRESS")
+    enr_b = Enrollment(course_id=course.id, learner_id=3, status="IN_PROGRESS")
+    enr_c = Enrollment(course_id=course.id, learner_id=4, status="IN_PROGRESS")
+    db_session.add_all([enr_a, enr_b, enr_c])
+    db_session.flush()
+
+    # Learner A: 영상 완료 + 퀴즈 제출 (오답 없음) -> COMPLETED 대상
+    db_session.add(VideoProgress(enrollment_id=enr_a.id, video_id=lesson.id, is_completed=True))
+    att_a = QuizAttempt(
+        quiz_id=quiz.id, enrollment_id=enr_a.id, attempt_type="UNIT", status="SUBMITTED"
+    )
+    db_session.add(att_a)
+
+    # Learner B: 영상 완료 + 퀴즈 제출 + 미해결 오답 존재 -> IN_PROGRESS 유지 대상
+    db_session.add(VideoProgress(enrollment_id=enr_b.id, video_id=lesson.id, is_completed=True))
+    att_b = QuizAttempt(
+        quiz_id=quiz.id, enrollment_id=enr_b.id, attempt_type="UNIT", status="SUBMITTED"
+    )
+    db_session.add(att_b)
+    db_session.flush()
+
+    att_q_b = AttemptQuestion(attempt_id=att_b.id, question_id=q1.id, order_no=1)
+    db_session.add(att_q_b)
+    db_session.flush()
+
+    ans_b = QuestionAnswer(attempt_question_id=att_q_b.id, selected_choice_no=2, is_correct=False)
+    db_session.add(ans_b)
+    db_session.flush()
+
+    rec_b = QuestionRecord(
+        enrollment_id=enr_b.id,
+        question_id=q1.id,
+        status="REVIEW_NEEDED",
+        last_answer_id=ans_b.id,
+        wrong_count=1,
+    )
+    db_session.add(rec_b)
+
+    # Learner C: 영상만 완료 (퀴즈 미제출) -> IN_PROGRESS 유지 대상
+    db_session.add(VideoProgress(enrollment_id=enr_c.id, video_id=lesson.id, is_completed=True))
+
+    db_session.commit()
+
+    # 재계산 함수 실행
+    recalculate_enrollments_progress(course, db_session)
+    db_session.commit()
+    db_session.expire_all()
+
+    # 검증: enrollment_id 기준으로 완벽히 분리되어 판정
+    enr_a_db = db_session.get(Enrollment, enr_a.id)
+    enr_b_db = db_session.get(Enrollment, enr_b.id)
+    enr_c_db = db_session.get(Enrollment, enr_c.id)
+
+    assert enr_a_db.status == "COMPLETED"
+    assert enr_a_db.current_completed_at is not None
+    assert enr_b_db.status == "IN_PROGRESS"
+    assert enr_b_db.current_completed_at is None
+    assert enr_c_db.status == "IN_PROGRESS"
+    assert enr_c_db.current_completed_at is None

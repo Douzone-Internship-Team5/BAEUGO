@@ -107,7 +107,11 @@ def test_b6_videos_crud_and_replacement(client: TestClient, db_session: Session)
     # [성공 6] DELETE 영상 비활성화
     res_del_vid = client.delete(f"/api/v1/instructor/videos/{new_vid_id}")
     assert res_del_vid.status_code == 200
-    assert res_del_vid.json()["data"]["isActive"] is False
+    assert res_del_vid.json()["data"] == {
+        "videoId": new_vid_id,
+        "courseId": course.id,
+        "isActive": False,
+    }
 
     # [실패 3] PUBLISHED 강좌에 영상 업로드/수정/삭제 시도 -> 409 CONFLICT
     pub_course = Course(
@@ -419,3 +423,172 @@ def test_b6_cross_section_unit_quiz_auto_create_and_json_patch(
     )
     assert res_bad_ext.status_code == 400
     assert res_bad_ext.json()["error"]["code"] == "INVALID_FILE"
+
+
+def test_video_duration_extraction_and_fallback(client: TestClient, db_session: Session):
+    from unittest.mock import patch
+
+    course = Course(
+        instructor_id=6,
+        category_id=1,
+        topic_id=11,
+        title="영상 길이 추출 강좌",
+        description="설명",
+        difficulty="BEGINNER",
+        price_krw=0,
+        status="DRAFT",
+    )
+    db_session.add(course)
+    db_session.commit()
+
+    # 1. 실제 영상 추출 성공 시 (extract_video_duration이 125초 반환)
+    with patch("app.routers.instructor.videos.extract_video_duration", return_value=125):
+        res_real = client.post(
+            "/api/v1/instructor/videos",
+            data={"courseId": course.id, "videoType": "OT", "title": "실제 길이 OT"},
+            files={"file": ("real_sample.mp4", io.BytesIO(b"dummy mp4 bytes"), "video/mp4")},
+        )
+        assert res_real.status_code == 201
+        assert res_real.json()["data"]["durationSeconds"] == 125
+
+    # 2. 영상 추출 실패 시 (None 반환) 기본 360초 폴백
+    with patch("app.routers.instructor.videos.extract_video_duration", return_value=None):
+        res_fallback = client.post(
+            "/api/v1/instructor/videos",
+            data={"courseId": course.id, "videoType": "OT", "title": "폴백 OT"},
+            files={"file": ("fallback_sample.mp4", io.BytesIO(b"dummy mp4 bytes"), "video/mp4")},
+        )
+        assert res_fallback.status_code == 201
+        assert res_fallback.json()["data"]["durationSeconds"] == 360
+        active_vid_id = res_fallback.json()["data"]["videoId"]
+
+    # 3. PATCH 영상 파일 교체 시 실제 재생 시간 갱신 (75초)
+    with patch("app.routers.instructor.videos.extract_video_duration", return_value=75):
+        res_patch_real = client.patch(
+            f"/api/v1/instructor/videos/{active_vid_id}",
+            files={"file": ("patch_sample.mp4", io.BytesIO(b"dummy mp4 bytes"), "video/mp4")},
+        )
+        assert res_patch_real.status_code == 200
+        assert res_patch_real.json()["data"]["durationSeconds"] == 75
+        new_vid_id = res_patch_real.json()["data"]["videoId"]
+
+    # 4. PATCH 영상 파일 교체 시 추출 실패(None)인 경우 이전 재생 시간(75초) 폴백 유지
+    with patch("app.routers.instructor.videos.extract_video_duration", return_value=None):
+        res_patch_fallback = client.patch(
+            f"/api/v1/instructor/videos/{new_vid_id}",
+            files={"file": ("patch_fallback.mp4", io.BytesIO(b"dummy mp4 bytes"), "video/mp4")},
+        )
+        assert res_patch_fallback.status_code == 200
+        assert res_patch_fallback.json()["data"]["durationSeconds"] == 75
+
+
+def test_extract_video_duration_unit(tmp_path):
+    import subprocess
+
+    from app.services.storage import extract_video_duration
+
+    # 1. 존재하지 않는 파일 -> None
+    assert extract_video_duration(tmp_path / "nonexistent.mp4") is None
+
+    # 2. 손상된 영상 / 더미 파일 -> None
+    corrupt_file = tmp_path / "corrupt.mp4"
+    corrupt_file.write_bytes(b"not a valid video content")
+    assert extract_video_duration(corrupt_file) is None
+
+    # 3. 빈 파일 -> None
+    empty_file = tmp_path / "empty.mp4"
+    empty_file.write_bytes(b"")
+    assert extract_video_duration(empty_file) is None
+
+    # 4. 실제 ffmpeg로 생성한 2초짜리 유효한 mp4 영상 검증 (컨테이너 내 ffmpeg 활용)
+    real_video = tmp_path / "real_2s.mp4"
+    try:
+        subprocess.run(
+            [
+                "ffmpeg",
+                "-y",
+                "-f",
+                "lavfi",
+                "-i",
+                "testsrc=duration=2:size=160x120:rate=1",
+                "-c:v",
+                "libx264",
+                str(real_video),
+            ],
+            check=True,
+            capture_output=True,
+        )
+        dur = extract_video_duration(real_video)
+        assert dur == 2
+    except (subprocess.SubprocessError, FileNotFoundError):
+        # ffmpeg가 없는 런타임 환경인 경우 스킵
+        pass
+
+
+def test_extract_video_thumbnail_unit(tmp_path):
+    import subprocess
+
+    from app.services.storage import extract_video_thumbnail
+
+    # 1. 존재하지 않는 파일 -> False
+    assert extract_video_thumbnail(tmp_path / "nonexistent.mp4", tmp_path / "thumb.jpg") is False
+
+    # 2. 손상된 영상 -> False
+    corrupt_file = tmp_path / "corrupt.mp4"
+    corrupt_file.write_bytes(b"not a video")
+    assert extract_video_thumbnail(corrupt_file, tmp_path / "thumb.jpg") is False
+
+    # 3. 실제 ffmpeg로 생성한 영상 -> 썸네일 추출 성공
+    real_video = tmp_path / "real_thumb_test.mp4"
+    out_thumb = tmp_path / "thumb.jpg"
+    try:
+        subprocess.run(
+            [
+                "ffmpeg",
+                "-y",
+                "-f",
+                "lavfi",
+                "-i",
+                "testsrc=duration=2:size=160x120:rate=1",
+                "-c:v",
+                "libx264",
+                str(real_video),
+            ],
+            check=True,
+            capture_output=True,
+        )
+        success = extract_video_thumbnail(real_video, out_thumb)
+        assert success is True
+        assert out_thumb.exists()
+        assert out_thumb.stat().st_size > 0
+    except (subprocess.SubprocessError, FileNotFoundError):
+        pass
+
+
+def test_upload_video_auto_thumbnail(client: TestClient, db_session: Session):
+    from unittest.mock import patch
+
+    course = Course(
+        instructor_id=6,
+        category_id=1,
+        topic_id=11,
+        title="자동 썸네일 테스트 강좌",
+        description="설명",
+        difficulty="BEGINNER",
+        price_krw=0,
+        status="DRAFT",
+    )
+    db_session.add(course)
+    db_session.commit()
+
+    with patch("app.routers.instructor.videos.extract_video_thumbnail", return_value=True):
+        res = client.post(
+            "/api/v1/instructor/videos",
+            data={"courseId": course.id, "videoType": "OT", "title": "자동 썸네일 OT"},
+            files={"file": ("auto_ot.mp4", io.BytesIO(b"dummy mp4 bytes"), "video/mp4")},
+        )
+        assert res.status_code == 201
+        vid_id = res.json()["data"]["videoId"]
+        vid = db_session.get(Video, vid_id)
+        assert vid.thumbnail_storage_key is not None
+        assert vid.thumbnail_storage_key.endswith(".jpg")
