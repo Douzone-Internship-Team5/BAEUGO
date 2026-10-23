@@ -31,6 +31,7 @@ def test_feed_ot_all_cases(client: TestClient, db_session: Session):
         title="피드 무료 OT",
         duration_seconds=45,
         video_storage_key="test/ot_feed.mp4",
+        thumbnail_storage_key="courses/1/ot_thumb.jpg",
         stt_status="COMPLETED",
         view_count=120,
         like_count=15,
@@ -49,6 +50,19 @@ def test_feed_ot_all_cases(client: TestClient, db_session: Session):
     assert "items" in data
     assert any(item["videoId"] == ot_vid.id for item in data["items"])
     assert "hasNext" in data
+
+    target_item = next(item for item in data["items"] if item["videoId"] == ot_vid.id)
+    assert target_item["videoUrl"] == f"/api/v1/videos/{ot_vid.id}/stream"
+    assert target_item["thumbnailUrl"] == "/api/v1/media/courses/1/ot_thumb.jpg"
+
+    # [M 엔드포인트 제거 검증] B 피드 응답 URL로 동일 백엔드에 직접 미디어 요청 시 404 NOT_FOUND
+    res_direct_stream = client.get(target_item["videoUrl"])
+    assert res_direct_stream.status_code == 404
+    assert res_direct_stream.json()["error"]["code"] == "NOT_FOUND"
+
+    res_direct_media = client.get(target_item["thumbnailUrl"])
+    assert res_direct_media.status_code == 404
+    assert res_direct_media.json()["error"]["code"] == "NOT_FOUND"
 
     # [성공 2] 다음 페이지 커서 전달 시 정상 동작 확인
     next_cursor = data.get("nextCursor")

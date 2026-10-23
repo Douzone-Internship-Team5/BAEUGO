@@ -147,30 +147,24 @@ def save_upload_file(file: UploadFile, relative_dir: str, filename_prefix: str =
 
 
 def get_thumbnail_url(storage_key: str | None) -> str | None:
-    if not storage_key:
+    if not storage_key or not storage_key.strip():
         return None
-    if (
-        storage_key.startswith("http://")
-        or storage_key.startswith("https://")
-        or storage_key.startswith("/")
-    ):
-        return storage_key
-    return f"/api/v1/media/{storage_key.lstrip('/')}"
+    cleaned = storage_key.strip()
+    if cleaned.startswith("http://") or cleaned.startswith("https://") or cleaned.startswith("/"):
+        return cleaned
+    return f"/api/v1/media/{cleaned.lstrip('/')}"
 
 
 def get_video_stream_url(video_id: int | None) -> str | None:
-    if not video_id:
+    if video_id is None:
         return None
     return f"/api/v1/videos/{video_id}/stream"
 
 
 def get_profile_image_url(profile_image_key: str | None) -> str | None:
-    if not profile_image_key:
+    if not profile_image_key or not profile_image_key.strip():
         return None
-    if (
-        profile_image_key.startswith("http://")
-        or profile_image_key.startswith("https://")
-        or profile_image_key.startswith("/")
-    ):
-        return profile_image_key
-    return f"/api/v1/media/{profile_image_key.lstrip('/')}"
+    cleaned = profile_image_key.strip()
+    if cleaned.startswith("http://") or cleaned.startswith("https://") or cleaned.startswith("/"):
+        return cleaned
+    return f"/api/v1/media/{cleaned.lstrip('/')}"

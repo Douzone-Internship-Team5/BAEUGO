@@ -16,6 +16,7 @@ def test_course_search_all_cases(client: TestClient, db_session: Session):
         description="기획 문서 작성 가이드",
         difficulty="BEGINNER",
         price_krw=0,
+        thumbnail_storage_key="courses/free_thumb.png",
         status="PUBLISHED",
         published_at=datetime.now(UTC),
     )
@@ -36,7 +37,8 @@ def test_course_search_all_cases(client: TestClient, db_session: Session):
     # [성공 1] 비로그인 상태에서 검색어 필터링 (q="기획")
     res_q = client.get("/api/v1/courses?q=기획")
     assert res_q.status_code == 200
-    assert any(c["courseId"] == c_free.id for c in res_q.json()["data"]["items"])
+    matched_item = next(c for c in res_q.json()["data"]["items"] if c["courseId"] == c_free.id)
+    assert matched_item["thumbnailUrl"] == "/api/v1/media/courses/free_thumb.png"
     assert not any(c["courseId"] == c_paid.id for c in res_q.json()["data"]["items"])
 
     # [성공 2] 가격 필터 (price=free / price=paid)
