@@ -1,47 +1,59 @@
 from app.schemas.auth import LoginRequest, LoginResponse, LoginUser
 from app.schemas.common import CamelModel, CursorPageData, DataResponse, PageData
 from app.schemas.course import (
-    CategorySimple,
-    CourseSearchItem,
-    FeedCourseInfo,
-    FeedInstructorInfo,
-    FeedOtItem,
-    TopicSimple,
-)
-from app.schemas.instructor import (
     CourseCounts,
     CourseCreateRequest,
     CourseDeleteResponseData,
     CourseMutationResponseData,
-    CourseStatItem,
     CourseStatusUpdateRequest,
     CourseStatusUpdateResponseData,
     CourseUpdateRequest,
-    DailyStatItem,
     InstructorCourseDetail,
     InstructorCourseItem,
     InstructorCourseListResponseData,
     InstructorSectionDetail,
-    InstructorStatsResponseData,
     InstructorUnitQuizSummary,
     InstructorVideoSummary,
     ProcessingInfo,
     PublishCheck,
+)
+from app.schemas.feed import (
+    FeedCourseInfo,
+    FeedInstructorInfo,
+    FeedOtItem,
+)
+from app.schemas.quiz import (
     QuestionItem,
     QuizDetailResponseData,
     QuizRegenerateResponseData,
     QuizUpdateRequest,
+)
+from app.schemas.script import (
     ScriptRegenerateResponseData,
     ScriptResponseData,
     ScriptSegment,
     ScriptUpdateRequest,
+)
+from app.schemas.search import (
+    CategorySimple,
+    CourseSearchItem,
+    TopicSimple,
+)
+from app.schemas.section import (
     SectionCreateRequest,
     SectionDeleteResponseData,
     SectionResponseData,
     SectionUpdateRequest,
+)
+from app.schemas.stats import (
+    CourseStatItem,
+    DailyStatItem,
+    InstructorStatsResponseData,
     StatsComparison,
     StatsPeriod,
     StatsSummary,
+)
+from app.schemas.video import (
     VideoDeleteResponseData,
     VideoResponseData,
 )
