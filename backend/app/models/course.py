@@ -14,10 +14,11 @@ from sqlalchemy import (
     String,
     Text,
     UniqueConstraint,
+    text,
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
-from app.models.base import Base, TimestampMixin
+from app.models.base import Base
 
 if TYPE_CHECKING:
     from app.models.category import Category, Topic
@@ -25,13 +26,21 @@ if TYPE_CHECKING:
     from app.models.user import User
 
 
-class Course(Base, TimestampMixin):
+class Course(Base):
     __tablename__ = "courses"
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
     instructor_id: Mapped[int] = mapped_column(
         BigInteger, ForeignKey("users.id", ondelete="RESTRICT"), nullable=False, index=True
     )
+    status: Mapped[str] = mapped_column(
+        String(20), default="DRAFT", server_default="DRAFT", nullable=False, index=True
+    )  # DRAFT, PUBLISHED, EDITING, OPERATOR_HIDDEN
+    closed_by_user_id: Mapped[int | None] = mapped_column(
+        BigInteger, ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    closed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    closed_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
     category_id: Mapped[int] = mapped_column(
         BigInteger, ForeignKey("categories.id", ondelete="RESTRICT"), nullable=False, index=True
     )
@@ -43,17 +52,9 @@ class Course(Base, TimestampMixin):
     difficulty: Mapped[str] = mapped_column(
         String(20), nullable=False
     )  # BEGINNER, INTERMEDIATE, ADVANCED
-    price_krw: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
-    status: Mapped[str] = mapped_column(
-        String(20), default="DRAFT", nullable=False, index=True
-    )  # DRAFT, PUBLISHED, EDITING, OPERATOR_HIDDEN
+    price_krw: Mapped[int] = mapped_column(Integer, default=0, server_default="0", nullable=False)
     thumbnail_storage_key: Mapped[str | None] = mapped_column(String(255), nullable=True)
     published_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    closed_by_user_id: Mapped[int | None] = mapped_column(
-        BigInteger, ForeignKey("users.id", ondelete="SET NULL"), nullable=True
-    )
-    closed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    closed_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     instructor: Mapped[User] = relationship("User", foreign_keys=[instructor_id])
     category: Mapped[Category] = relationship("Category", foreign_keys=[category_id])
@@ -79,7 +80,7 @@ class Course(Base, TimestampMixin):
     )
 
 
-class Section(Base, TimestampMixin):
+class Section(Base):
     __tablename__ = "sections"
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
@@ -87,8 +88,12 @@ class Section(Base, TimestampMixin):
         BigInteger, ForeignKey("courses.id", ondelete="CASCADE"), nullable=False, index=True
     )
     title: Mapped[str] = mapped_column(String(150), nullable=False)
-    sort_order: Mapped[int] = mapped_column(SmallInteger, default=1, nullable=False)
-    is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    sort_order: Mapped[int] = mapped_column(
+        SmallInteger, default=1, server_default="1", nullable=False
+    )
+    is_active: Mapped[bool] = mapped_column(
+        Boolean, default=True, server_default=text("true"), nullable=False
+    )
 
     course: Mapped[Course] = relationship("Course", back_populates="sections")
     videos: Mapped[list[Video]] = relationship(
@@ -106,7 +111,7 @@ class Section(Base, TimestampMixin):
         )
 
 
-class Video(Base, TimestampMixin):
+class Video(Base):
     __tablename__ = "videos"
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
@@ -118,19 +123,25 @@ class Video(Base, TimestampMixin):
     )
     video_type: Mapped[str] = mapped_column(String(10), nullable=False)  # OT, LESSON
     title: Mapped[str] = mapped_column(String(200), nullable=False)
-    duration_seconds: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
-    sort_order: Mapped[int] = mapped_column(SmallInteger, default=0, nullable=False)
     video_storage_key: Mapped[str] = mapped_column(String(255), nullable=False)
     thumbnail_storage_key: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    duration_seconds: Mapped[int] = mapped_column(
+        Integer, default=0, server_default="0", nullable=False
+    )
+    sort_order: Mapped[int] = mapped_column(
+        SmallInteger, default=0, server_default="0", nullable=False
+    )
     stt_status: Mapped[str] = mapped_column(
-        String(20), default="PENDING", nullable=False
+        String(20), default="PENDING", server_default="PENDING", nullable=False
     )  # PENDING, PROCESSING, COMPLETED, FAILED
     transcript_reviewed_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
-    view_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
-    like_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
-    is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    view_count: Mapped[int] = mapped_column(Integer, default=0, server_default="0", nullable=False)
+    like_count: Mapped[int] = mapped_column(Integer, default=0, server_default="0", nullable=False)
+    is_active: Mapped[bool] = mapped_column(
+        Boolean, default=True, server_default=text("true"), nullable=False
+    )
 
     course: Mapped[Course] = relationship("Course", back_populates="videos")
     section: Mapped[Section | None] = relationship("Section", back_populates="videos")
@@ -142,7 +153,7 @@ class Video(Base, TimestampMixin):
     )
 
 
-class VideoScript(Base, TimestampMixin):
+class VideoScript(Base):
     __tablename__ = "video_scripts"
     __table_args__ = (UniqueConstraint("video_id", "seq", name="uq_video_scripts_video_seq"),)
 
@@ -158,7 +169,7 @@ class VideoScript(Base, TimestampMixin):
     video: Mapped[Video] = relationship("Video", back_populates="scripts")
 
 
-class Quiz(Base, TimestampMixin):
+class Quiz(Base):
     __tablename__ = "quizzes"
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
@@ -176,7 +187,9 @@ class Quiz(Base, TimestampMixin):
         BigInteger, ForeignKey("users.id", ondelete="SET NULL"), nullable=True
     )
     reviewed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    is_active: Mapped[bool] = mapped_column(
+        Boolean, default=True, server_default=text("true"), nullable=False
+    )
 
     course: Mapped[Course] = relationship("Course", back_populates="quizzes")
     section: Mapped[Section | None] = relationship("Section", back_populates="quizzes")
@@ -188,7 +201,7 @@ class Quiz(Base, TimestampMixin):
     )
 
 
-class Question(Base, TimestampMixin):
+class Question(Base):
     __tablename__ = "questions"
     __table_args__ = (UniqueConstraint("quiz_id", "order_no", name="uq_questions_quiz_order"),)
 
@@ -196,14 +209,16 @@ class Question(Base, TimestampMixin):
     quiz_id: Mapped[int] = mapped_column(
         BigInteger, ForeignKey("quizzes.id", ondelete="CASCADE"), nullable=False, index=True
     )
-    order_no: Mapped[int] = mapped_column(Integer, nullable=False)
-    generated_by: Mapped[str] = mapped_column(
-        String(20), default="AI", nullable=False
-    )  # AI, INSTRUCTOR
     content: Mapped[str] = mapped_column(Text, nullable=False)
-    explanation: Mapped[str] = mapped_column(Text, nullable=False)
     correct_choice_no: Mapped[int] = mapped_column(SmallInteger, nullable=False)  # 1~4
-    is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    explanation: Mapped[str] = mapped_column(Text, nullable=False)
+    generated_by: Mapped[str] = mapped_column(
+        String(20), default="AI", server_default="AI", nullable=False
+    )  # AI, INSTRUCTOR
+    order_no: Mapped[int] = mapped_column(Integer, nullable=False)
+    is_active: Mapped[bool] = mapped_column(
+        Boolean, default=True, server_default=text("true"), nullable=False
+    )
 
     quiz: Mapped[Quiz] = relationship("Quiz", back_populates="questions")
     choices: Mapped[list[QuestionChoice]] = relationship(
@@ -214,39 +229,45 @@ class Question(Base, TimestampMixin):
     )
 
 
-class QuestionChoice(Base, TimestampMixin):
+class QuestionChoice(Base):
     __tablename__ = "question_choices"
-    __table_args__ = (
-        UniqueConstraint("question_id", "choice_no", name="uq_question_choices_question_choice"),
-    )
 
-    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
     question_id: Mapped[int] = mapped_column(
-        BigInteger, ForeignKey("questions.id", ondelete="CASCADE"), nullable=False, index=True
+        BigInteger, ForeignKey("questions.id", ondelete="CASCADE"), primary_key=True
     )
-    choice_no: Mapped[int] = mapped_column(SmallInteger, nullable=False)  # 1~4
-    content: Mapped[str] = mapped_column(Text, nullable=False)
+    choice_no: Mapped[int] = mapped_column(SmallInteger, primary_key=True)  # 1~4
+    content: Mapped[str] = mapped_column(String(500), nullable=False)
 
     question: Mapped[Question] = relationship("Question", back_populates="choices")
 
 
-class CourseDailyStat(Base, TimestampMixin):
+class CourseDailyStat(Base):
     __tablename__ = "course_daily_stats"
-    __table_args__ = (
-        UniqueConstraint("course_id", "start_date", name="uq_course_daily_stats_course_date"),
-    )
 
-    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
     course_id: Mapped[int] = mapped_column(
-        BigInteger, ForeignKey("courses.id", ondelete="CASCADE"), nullable=False, index=True
+        BigInteger, ForeignKey("courses.id", ondelete="CASCADE"), primary_key=True
     )
-    start_date: Mapped[date] = mapped_column(Date, nullable=False, index=True)
-    lesson_views: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
-    new_students: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
-    expected_revenue: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
-    available_quiz_cnt: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
-    first_submitted_cnt: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
-    first_answer_cnt: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
-    first_correct_cnt: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    start_date: Mapped[date] = mapped_column(Date, primary_key=True)
+    lesson_views: Mapped[int] = mapped_column(
+        Integer, default=0, server_default="0", nullable=False
+    )
+    new_students: Mapped[int] = mapped_column(
+        Integer, default=0, server_default="0", nullable=False
+    )
+    expected_revenue: Mapped[int] = mapped_column(
+        Integer, default=0, server_default="0", nullable=False
+    )
+    available_quiz_cnt: Mapped[int] = mapped_column(
+        Integer, default=0, server_default="0", nullable=False
+    )
+    first_submitted_cnt: Mapped[int] = mapped_column(
+        Integer, default=0, server_default="0", nullable=False
+    )
+    first_answer_cnt: Mapped[int] = mapped_column(
+        Integer, default=0, server_default="0", nullable=False
+    )
+    first_correct_cnt: Mapped[int] = mapped_column(
+        Integer, default=0, server_default="0", nullable=False
+    )
 
     course: Mapped[Course] = relationship("Course", back_populates="daily_stats")

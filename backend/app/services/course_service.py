@@ -134,13 +134,12 @@ def recalculate_enrollments_progress(course: Course, db: Session) -> None:
         return
 
     enrollment_ids = [e.id for e in enrollments]
-    learner_ids = [e.learner_id for e in enrollments]
 
-    # 1. 수강생별 완료된 활성 영상 개수 일괄 집계 (1회 쿼리)
+    # 1. 수강 등록별 완료된 활성 영상 개수 일괄 집계 (1회 쿼리)
     video_counts: dict[int, int] = {}
     if active_lesson_ids:
         raw_video_counts = db.execute(
-            select(VideoProgress.enrollment_id, func.count(VideoProgress.id))
+            select(VideoProgress.enrollment_id, func.count(VideoProgress.video_id))
             .where(
                 VideoProgress.enrollment_id.in_(enrollment_ids),
                 VideoProgress.video_id.in_(active_lesson_ids),
@@ -150,41 +149,41 @@ def recalculate_enrollments_progress(course: Course, db: Session) -> None:
         ).all()
         video_counts = {eid: cnt for eid, cnt in raw_video_counts}
 
-    # 2. 수강생별 제출 완료된 활성 퀴즈 개수 일괄 집계 (1회 쿼리)
+    # 2. 수강 등록별 제출 완료된 활성 퀴즈 개수 일괄 집계 (1회 쿼리)
     quiz_counts: dict[int, int] = {}
     if active_quiz_ids:
         raw_quiz_counts = db.execute(
-            select(QuizAttempt.learner_id, func.count(func.distinct(QuizAttempt.quiz_id)))
+            select(QuizAttempt.enrollment_id, func.count(func.distinct(QuizAttempt.quiz_id)))
             .where(
-                QuizAttempt.learner_id.in_(learner_ids),
+                QuizAttempt.enrollment_id.in_(enrollment_ids),
                 QuizAttempt.quiz_id.in_(active_quiz_ids),
                 QuizAttempt.status == "SUBMITTED",
             )
-            .group_by(QuizAttempt.learner_id)
+            .group_by(QuizAttempt.enrollment_id)
         ).all()
-        quiz_counts = {lid: cnt for lid, cnt in raw_quiz_counts}
+        quiz_counts = {eid: cnt for eid, cnt in raw_quiz_counts}
 
-    # 3. 수강생별 활성 문항 중 미해결 오답(REVIEW_NEEDED) 개수 일괄 집계 (1회 쿼리)
+    # 3. 수강 등록별 활성 문항 중 미해결 오답(REVIEW_NEEDED) 개수 일괄 집계 (1회 쿼리)
     unresolved_counts: dict[int, int] = {}
     if active_question_ids:
         raw_unresolved = db.execute(
-            select(QuestionRecord.learner_id, func.count(QuestionRecord.id))
+            select(QuestionRecord.enrollment_id, func.count(QuestionRecord.id))
             .where(
-                QuestionRecord.learner_id.in_(learner_ids),
+                QuestionRecord.enrollment_id.in_(enrollment_ids),
                 QuestionRecord.question_id.in_(active_question_ids),
                 QuestionRecord.status == "REVIEW_NEEDED",
             )
-            .group_by(QuestionRecord.learner_id)
+            .group_by(QuestionRecord.enrollment_id)
         ).all()
-        unresolved_counts = {lid: cnt for lid, cnt in raw_unresolved}
+        unresolved_counts = {eid: cnt for eid, cnt in raw_unresolved}
 
     # 4. 인메모리 매핑으로 상태 일괄 갱신 (반복 쿼리 제거)
     now = datetime.now(UTC)
     for enr in enrollments:
         completed_videos_cnt = video_counts.get(enr.id, 0)
-        submitted_quizzes_cnt = quiz_counts.get(enr.learner_id, 0)
+        submitted_quizzes_cnt = quiz_counts.get(enr.id, 0)
         completed_items = completed_videos_cnt + submitted_quizzes_cnt
-        unresolved_cnt = unresolved_counts.get(enr.learner_id, 0)
+        unresolved_cnt = unresolved_counts.get(enr.id, 0)
 
         is_fully_completed = (completed_items >= total_items_count) and (unresolved_cnt == 0)
 
