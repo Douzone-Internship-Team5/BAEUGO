@@ -10,7 +10,6 @@ from sqlalchemy import (
     DateTime,
     ForeignKey,
     Integer,
-    SmallInteger,
     String,
     UniqueConstraint,
     func,
@@ -20,9 +19,18 @@ from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.models.base import Base
+# Re-exports for backward compatibility
+from app.models.quiz import (
+    AttemptQuestion,
+    QuestionAnswer,
+    QuestionRecord,
+    QuizAttempt,
+)
+from app.models.video import VideoLike, VideoView
 
 if TYPE_CHECKING:
-    from app.models.course import Course, Question, Video
+    from app.models.course import Course
+    from app.models.video import Video
     from app.models.user import User
 
 
@@ -99,142 +107,6 @@ class VideoProgress(Base):
     video: Mapped[Video] = relationship("Video")
 
 
-class VideoLike(Base):
-    __tablename__ = "video_likes"
-
-    user_id: Mapped[int] = mapped_column(
-        BigInteger, ForeignKey("users.id", ondelete="CASCADE"), primary_key=True
-    )
-    video_id: Mapped[int] = mapped_column(
-        BigInteger, ForeignKey("videos.id", ondelete="CASCADE"), primary_key=True
-    )
-
-    user: Mapped[User] = relationship("User")
-    video: Mapped[Video] = relationship("Video")
-
-
-class VideoView(Base):
-    __tablename__ = "video_views"
-
-    user_id: Mapped[int] = mapped_column(
-        BigInteger, ForeignKey("users.id", ondelete="CASCADE"), primary_key=True
-    )
-    video_id: Mapped[int] = mapped_column(
-        BigInteger, ForeignKey("videos.id", ondelete="CASCADE"), primary_key=True
-    )
-    view_date: Mapped[date] = mapped_column(Date, primary_key=True)
-    viewed_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now(), nullable=False
-    )
-
-
-class QuizAttempt(Base):
-    __tablename__ = "quiz_attempts"
-
-    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
-    enrollment_id: Mapped[int] = mapped_column(
-        BigInteger, ForeignKey("enrollments.id", ondelete="CASCADE"), nullable=False, index=True
-    )
-    quiz_id: Mapped[int | None] = mapped_column(
-        BigInteger, ForeignKey("quizzes.id", ondelete="SET NULL"), nullable=True, index=True
-    )
-    attempt_type: Mapped[str] = mapped_column(
-        String(20), nullable=False
-    )  # UNIT, FINAL, WRONG_REVIEW
-    attempt_no: Mapped[int] = mapped_column(Integer, default=1, server_default="1", nullable=False)
-    status: Mapped[str] = mapped_column(
-        String(20), default="IN_PROGRESS", server_default="IN_PROGRESS", nullable=False
-    )  # IN_PROGRESS, SUBMITTED, CANCELLED
-    started_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now(), nullable=False
-    )
-    submitted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-
-    enrollment: Mapped[Enrollment] = relationship("Enrollment", back_populates="quiz_attempts")
-    attempt_questions: Mapped[list[AttemptQuestion]] = relationship(
-        "AttemptQuestion", back_populates="attempt", cascade="all, delete-orphan"
-    )
-
-
-class AttemptQuestion(Base):
-    __tablename__ = "attempt_questions"
-    __table_args__ = (
-        UniqueConstraint("attempt_id", "order_no", name="uq_attempt_questions_attempt_order"),
-        UniqueConstraint("attempt_id", "question_id", name="uq_attempt_questions_attempt_question"),
-    )
-
-    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
-    attempt_id: Mapped[int] = mapped_column(
-        BigInteger, ForeignKey("quiz_attempts.id", ondelete="CASCADE"), nullable=False, index=True
-    )
-    question_id: Mapped[int] = mapped_column(
-        BigInteger, ForeignKey("questions.id", ondelete="CASCADE"), nullable=False, index=True
-    )
-    order_no: Mapped[int] = mapped_column(Integer, nullable=False)
-    origin: Mapped[str] = mapped_column(
-        String(20), default="BASE", server_default="BASE", nullable=False
-    )
-
-    attempt: Mapped[QuizAttempt] = relationship("QuizAttempt", back_populates="attempt_questions")
-    question: Mapped[Question] = relationship("Question")
-    answer: Mapped[QuestionAnswer | None] = relationship(
-        "QuestionAnswer",
-        back_populates="attempt_question",
-        uselist=False,
-        cascade="all, delete-orphan",
-    )
-
-
-class QuestionAnswer(Base):
-    __tablename__ = "question_answers"
-
-    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
-    attempt_question_id: Mapped[int] = mapped_column(
-        BigInteger,
-        ForeignKey("attempt_questions.id", ondelete="CASCADE"),
-        unique=True,
-        nullable=False,
-    )
-    selected_choice_no: Mapped[int] = mapped_column(SmallInteger, nullable=False)
-    is_correct: Mapped[bool] = mapped_column(Boolean, nullable=False)
-    answered_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now(), nullable=False
-    )
-
-    attempt_question: Mapped[AttemptQuestion] = relationship(
-        "AttemptQuestion", back_populates="answer"
-    )
-
-
-class QuestionRecord(Base):
-    __tablename__ = "question_records"
-    __table_args__ = (
-        UniqueConstraint(
-            "enrollment_id", "question_id", name="uq_question_records_enrollment_question"
-        ),
-    )
-
-    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
-    enrollment_id: Mapped[int] = mapped_column(
-        BigInteger, ForeignKey("enrollments.id", ondelete="CASCADE"), nullable=False, index=True
-    )
-    question_id: Mapped[int] = mapped_column(
-        BigInteger, ForeignKey("questions.id", ondelete="CASCADE"), nullable=False, index=True
-    )
-    status: Mapped[str] = mapped_column(String(20), nullable=False)  # CORRECT, REVIEW_NEEDED
-    last_answer_id: Mapped[int] = mapped_column(
-        BigInteger, ForeignKey("question_answers.id", ondelete="CASCADE"), nullable=False
-    )
-    wrong_count: Mapped[int] = mapped_column(Integer, default=0, server_default="0", nullable=False)
-    resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-
-    enrollment: Mapped[Enrollment] = relationship("Enrollment", back_populates="question_records")
-    question: Mapped[Question] = relationship("Question")
-    last_answer: Mapped[QuestionAnswer] = relationship(
-        "QuestionAnswer", foreign_keys=[last_answer_id]
-    )
-
-
 class StudyActivitySession(Base):
     __tablename__ = "study_activity_sessions"
 
@@ -258,3 +130,17 @@ class StudyActivitySession(Base):
     enrollment: Mapped[Enrollment] = relationship("Enrollment")
     video: Mapped[Video | None] = relationship("Video")
     quiz_attempt: Mapped[QuizAttempt | None] = relationship("QuizAttempt")
+
+
+__all__ = [
+    "Enrollment",
+    "StudyActivitySession",
+    "VideoProgress",
+    # re-exports for backward compatibility
+    "AttemptQuestion",
+    "QuestionAnswer",
+    "QuestionRecord",
+    "QuizAttempt",
+    "VideoLike",
+    "VideoView",
+]
