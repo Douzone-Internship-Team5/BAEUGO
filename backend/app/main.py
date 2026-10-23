@@ -3,7 +3,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.core.config import get_settings
 from app.core.errors import register_error_handlers
-from app.routers import auth, courses, feed, health, instructor, media
+from app.routers import auth, courses, feed, health, instructor
 
 settings = get_settings()
 
@@ -24,4 +24,3 @@ app.include_router(auth.router, prefix=settings.api_prefix)
 app.include_router(instructor.router, prefix=settings.api_prefix)
 app.include_router(feed.router, prefix=settings.api_prefix)
 app.include_router(courses.router, prefix=settings.api_prefix)
-app.include_router(media.router, prefix=settings.api_prefix)

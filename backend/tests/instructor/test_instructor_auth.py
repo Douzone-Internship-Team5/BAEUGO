@@ -468,8 +468,3 @@ def test_b_endpoints_ownership_security_404_matrix(client: TestClient, db_sessio
 
     # (13) B-9 타인 강좌 ID로 통계 조회 시 404
     assert client.get(f"/api/v1/instructor/stats?courseId={other_course.id}").status_code == 404
-
-    # (14) 미디어 스트리밍: 타 강사의 학습 영상(LESSON) 스트리밍 시도 시 403 FORBIDDEN
-    res_stream = client.get(f"/api/v1/videos/{other_vid.id}/stream")
-    assert res_stream.status_code == 403
-    assert res_stream.json()["error"]["code"] == "FORBIDDEN"
