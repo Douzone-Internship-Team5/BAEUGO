@@ -3,7 +3,9 @@ from datetime import UTC, datetime
 from fastapi.testclient import TestClient
 from sqlalchemy.orm import Session
 
-from app.models.course import Course, Quiz, Section, Video
+from app.models.course import Course, Section
+from app.models.quiz import Quiz
+from app.models.video import Video
 
 
 def test_b5_sections_all_cases(client: TestClient, db_session: Session):

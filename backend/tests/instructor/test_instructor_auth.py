@@ -9,8 +9,9 @@ from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
 from app.core.security import JWT_ALGORITHM
-from app.models.course import Course, Section, Video
+from app.models.course import Course, Section
 from app.models.user import AccountType, Role, User, UserRole
+from app.models.video import Video
 from tests.conftest import auth_header
 
 # B 도메인 전체 엔드포인트 목록 (B-1 ~ B-9, 총 19개 요청 형태)

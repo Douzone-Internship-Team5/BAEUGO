@@ -3,7 +3,8 @@ from datetime import UTC, date, datetime
 from fastapi.testclient import TestClient
 from sqlalchemy.orm import Session
 
-from app.models.course import Course, CourseDailyStat
+from app.models.course import Course
+from app.models.stat import CourseDailyStat
 
 
 def test_b9_instructor_stats_all_cases(client: TestClient, db_session: Session):

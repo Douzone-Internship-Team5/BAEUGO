@@ -3,7 +3,7 @@ from datetime import UTC, datetime
 from fastapi.testclient import TestClient
 from sqlalchemy.orm import Session
 
-from app.models.course import Course, Question, QuestionChoice, Quiz, Section
+from app.models.course import Course, Section
 from app.models.learning import (
     AttemptQuestion,
     Enrollment,
@@ -11,6 +11,7 @@ from app.models.learning import (
     QuestionRecord,
     QuizAttempt,
 )
+from app.models.quiz import Question, QuestionChoice, Quiz
 
 
 def test_b8_quizzes_crud_and_validation(client: TestClient, db_session: Session):

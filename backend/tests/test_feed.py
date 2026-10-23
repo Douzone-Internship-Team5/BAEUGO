@@ -6,7 +6,8 @@ from fastapi.testclient import TestClient
 from sqlalchemy import delete
 from sqlalchemy.orm import Session
 
-from app.models.course import Course, Video
+from app.models.course import Course
+from app.models.video import Video
 from tests.conftest import auth_header
 
 

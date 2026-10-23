@@ -4,7 +4,9 @@ from datetime import UTC, datetime
 from fastapi.testclient import TestClient
 from sqlalchemy.orm import Session
 
-from app.models.course import Course, Question, QuestionChoice, Quiz, Section, Video
+from app.models.course import Course, Section
+from app.models.quiz import Question, QuestionChoice, Quiz
+from app.models.video import Video
 
 
 def test_b1_my_courses(client: TestClient, db_session: Session):
@@ -773,7 +775,7 @@ def test_b3_course_json_and_strict_validation(client: TestClient, db_session: Se
 
 
 def test_enrollment_id_based_recalculation(db_session: Session):
-    from app.models.course import Course, Question, QuestionChoice, Quiz, Section, Video
+    from app.models.course import Course, Section
     from app.models.learning import (
         AttemptQuestion,
         Enrollment,
@@ -782,6 +784,8 @@ def test_enrollment_id_based_recalculation(db_session: Session):
         QuizAttempt,
         VideoProgress,
     )
+    from app.models.quiz import Question, QuestionChoice, Quiz
+    from app.models.video import Video
     from app.services.course_service import recalculate_enrollments_progress
 
     course = Course(

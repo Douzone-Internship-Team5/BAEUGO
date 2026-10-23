@@ -4,7 +4,9 @@ from datetime import UTC, datetime
 from fastapi.testclient import TestClient
 from sqlalchemy.orm import Session
 
-from app.models.course import Course, Section, Video
+from app.models.course import Course, Section
+from app.models.quiz import Quiz
+from app.models.video import Video
 
 
 def test_b6_videos_crud_and_replacement(client: TestClient, db_session: Session):
@@ -306,8 +308,6 @@ def test_b6_cross_section_unit_quiz_auto_create_and_json_patch(
     client: TestClient, db_session: Session
 ):
     from sqlalchemy import select
-
-    from app.models.course import Quiz
 
     c1 = Course(
         instructor_id=6,
