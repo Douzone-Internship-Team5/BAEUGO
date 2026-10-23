@@ -19,6 +19,7 @@ from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.models.base import Base
+
 # Re-exports for backward compatibility
 from app.models.quiz import (
     AttemptQuestion,
@@ -30,8 +31,8 @@ from app.models.video import VideoLike, VideoView
 
 if TYPE_CHECKING:
     from app.models.course import Course
-    from app.models.video import Video
     from app.models.user import User
+    from app.models.video import Video
 
 
 class Enrollment(Base):

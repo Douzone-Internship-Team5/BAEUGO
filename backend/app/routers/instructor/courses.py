@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from datetime import UTC, datetime
 from typing import Any
 
-from fastapi import APIRouter, Query, UploadFile
+from fastapi import APIRouter, Query, Request, Response, UploadFile
+from fastapi.routing import APIRoute
 from sqlalchemy import desc, func, select
 from sqlalchemy.orm import selectinload
 
@@ -45,27 +47,51 @@ from app.services.storage import (
     validate_thumbnail_file,
 )
 
-router = APIRouter(tags=["instructor-courses"])
+
+class CourseRoute(APIRoute):
+    """multipart/form-data 및 application/json 요청 모두를
+    Pydantic 스키마와 매끄럽게 연동하는 커스텀 라우트.
+    """
+
+    def get_route_handler(self) -> Callable:
+        original_handler = super().get_route_handler()
+
+        async def custom_handler(request: Request) -> Response:
+            ct = request.headers.get("content-type", "")
+            if "multipart/form-data" in ct or "application/x-www-form-urlencoded" in ct:
+                form = await request.form()
+                form_dict: dict[str, Any] = {}
+                thumbnail = None
+                for k, v in form.items():
+                    if hasattr(v, "filename") or isinstance(v, UploadFile):
+                        thumbnail = v
+                    else:
+                        form_dict[k] = v
+
+                request._body = b"{}"
+                request._json = form_dict
+                request.state.thumbnail = thumbnail
+
+                new_headers = []
+                for hk, hv in request.scope["headers"]:
+                    if hk == b"content-type":
+                        new_headers.append((b"content-type", b"application/json"))
+                    elif hk == b"content-length":
+                        new_headers.append((b"content-length", b"2"))
+                    else:
+                        new_headers.append((hk, hv))
+                request.scope["headers"] = new_headers
+                if hasattr(request, "_headers"):
+                    del request._headers
+
+            return await original_handler(request)
+
+        return custom_handler
+
+
+router = APIRouter(tags=["instructor-courses"], route_class=CourseRoute)
 
 VALID_DIFFICULTIES = {"BEGINNER", "INTERMEDIATE", "ADVANCED"}
-
-
-def _parse_int_field(val: Any, field_name: str) -> int:
-    if isinstance(val, bool) or val is None:
-        raise AppError(400, "VALIDATION_ERROR", f"{field_name} 값이 올바르지 않습니다.")
-    if isinstance(val, int):
-        return val
-    if isinstance(val, str):
-        s = val.strip()
-        if not s:
-            raise AppError(400, "VALIDATION_ERROR", f"{field_name} 값이 올바르지 않습니다.")
-        try:
-            return int(s)
-        except ValueError as err:
-            raise AppError(
-                400, "VALIDATION_ERROR", f"{field_name} 값이 올바르지 않습니다."
-            ) from err
-    raise AppError(400, "VALIDATION_ERROR", f"{field_name} 값이 올바르지 않습니다.")
 
 
 # ==========================================
@@ -183,47 +209,45 @@ def get_course_detail_for_edit(
         )
     )
     if not course:
-        raise AppError(404, "NOT_FOUND", "존재하지 않거나 접근 권한이 없는 강좌입니다.")
+        raise AppError(404, "NOT_FOUND", "강좌를 찾을 수 없습니다.")
 
-    # 활성 OT 영상
-    ot_video_obj = next((v for v in course.videos if v.video_type == "OT" and v.is_active), None)
+    # 무료 OT 영상
+    ot_video = next((v for v in course.videos if v.video_type == "OT" and v.is_active), None)
     ot_video_dto = (
         InstructorVideoSummary(
-            video_id=ot_video_obj.id,
-            video_type=ot_video_obj.video_type,
-            title=ot_video_obj.title,
-            duration_seconds=ot_video_obj.duration_seconds,
-            sort_order=ot_video_obj.sort_order,
-            stt_status=ot_video_obj.stt_status,
-            transcript_reviewed_at=ot_video_obj.transcript_reviewed_at,
+            video_id=ot_video.id,
+            video_type=ot_video.video_type,
+            title=ot_video.title,
+            duration_seconds=ot_video.duration_seconds,
+            sort_order=ot_video.sort_order,
+            stt_status=ot_video.stt_status,
+            transcript_reviewed_at=ot_video.transcript_reviewed_at,
         )
-        if ot_video_obj
+        if ot_video
         else None
     )
 
-    # 섹션 및 영상 목록
+    # 활성 섹션 및 하위 영상, 단위 퀴즈
+    active_sections = [s for s in course.sections if s.is_active]
     sections_dto: list[InstructorSectionDetail] = []
     total_lesson_duration = 0
-    for s in sorted(course.sections, key=lambda x: (x.sort_order, x.id)):
-        if not s.is_active:
-            continue
 
+    for s in active_sections:
         lesson_videos: list[InstructorVideoSummary] = []
-        for v in sorted(s.videos, key=lambda x: (x.sort_order, x.id)):
-            if not v.is_active or v.video_type != "LESSON":
-                continue
-            total_lesson_duration += v.duration_seconds
-            lesson_videos.append(
-                InstructorVideoSummary(
-                    video_id=v.id,
-                    video_type=v.video_type,
-                    title=v.title,
-                    duration_seconds=v.duration_seconds,
-                    sort_order=v.sort_order,
-                    stt_status=v.stt_status,
-                    transcript_reviewed_at=v.transcript_reviewed_at,
+        for v in s.videos:
+            if v.video_type == "LESSON" and v.is_active:
+                lesson_videos.append(
+                    InstructorVideoSummary(
+                        video_id=v.id,
+                        video_type=v.video_type,
+                        title=v.title,
+                        duration_seconds=v.duration_seconds,
+                        sort_order=v.sort_order,
+                        stt_status=v.stt_status,
+                        transcript_reviewed_at=v.transcript_reviewed_at,
+                    )
                 )
-            )
+                total_lesson_duration += v.duration_seconds
 
         unit_quiz_obj = next(
             (
@@ -302,77 +326,36 @@ def get_course_detail_for_edit(
 # ==========================================
 @router.post("/courses", response_model=DataResponse[CourseMutationResponseData], status_code=201)
 async def create_course(
-    request: CourseCreateRequest,
+    req: CourseCreateRequest,
     db: DbSession,
     current_user: InstructorUser,
+    request: Request,
 ):
-    content_type = request.headers.get("content-type", "")
-    thumbnail: UploadFile | None = None
+    thumbnail = getattr(request.state, "thumbnail", None)
 
-    if "application/json" in content_type:
-        try:
-            body = await request.json()
-        except Exception as err:
-            raise AppError(400, "VALIDATION_ERROR", "입력값을 확인해 주세요.") from err
-        if not isinstance(body, dict):
-            raise AppError(400, "VALIDATION_ERROR", "입력값을 확인해 주세요.")
-        title_raw = body.get("title")
-        description_raw = body.get("description")
-        category_raw = body.get("categoryId", body.get("category_id"))
-        topic_raw = body.get("topicId", body.get("topic_id"))
-        difficulty_raw = body.get("difficulty")
-        price_raw = body.get("priceKrw", body.get("price_krw", 0))
-    else:
-        form = await request.form()
-        title_raw = form.get("title")
-        description_raw = form.get("description")
-        category_raw = form.get("categoryId", form.get("category_id"))
-        topic_raw = form.get("topicId", form.get("topic_id"))
-        difficulty_raw = form.get("difficulty")
-        price_raw = form.get("priceKrw", form.get("price_krw", 0))
-        thumb_val = form.get("thumbnail")
-        if isinstance(thumb_val, UploadFile) or hasattr(thumb_val, "filename"):
-            thumbnail = thumb_val  # type: ignore[assignment]
-
-    if (
-        title_raw is None
-        or description_raw is None
-        or category_raw is None
-        or topic_raw is None
-        or difficulty_raw is None
-    ):
-        raise AppError(400, "VALIDATION_ERROR", "입력값을 확인해 주세요.")
-
-    if not isinstance(title_raw, str) or not title_raw.strip() or len(title_raw) > 200:
+    if not req.title or not req.title.strip() or len(req.title) > 200:
         raise AppError(400, "VALIDATION_ERROR", "강좌 제목은 1~200자 이내로 입력해 주세요.")
-    if not isinstance(description_raw, str) or not description_raw.strip():
+    if not req.description or not req.description.strip():
         raise AppError(400, "VALIDATION_ERROR", "강좌 소개를 입력해 주세요.")
-    if not isinstance(difficulty_raw, str) or difficulty_raw not in VALID_DIFFICULTIES:
+    if req.difficulty not in VALID_DIFFICULTIES:
         raise AppError(400, "VALIDATION_ERROR", "유효하지 않은 난이도입니다.")
-
-    category_id = _parse_int_field(category_raw, "categoryId")
-    topic_id = _parse_int_field(topic_raw, "topicId")
-    price_krw = (
-        0 if (price_raw is None or price_raw == "") else _parse_int_field(price_raw, "priceKrw")
-    )
-
-    # category_id 및 topic_id 소속/활성 검증
-    category = db.get(Category, category_id)
-    topic = db.get(Topic, topic_id)
-    if (
-        not category
-        or not category.is_active
-        or not topic
-        or not topic.is_active
-        or topic.category_id != category_id
-    ):
+    if req.price_krw < 0:
         raise AppError(
             400,
             "VALIDATION_ERROR",
             "선택한 주제가 해당 직무 카테고리에 속하지 않거나 가격 값이 올바르지 않습니다.",
         )
 
-    if price_krw < 0:
+    # category_id 및 topic_id 소속/활성 검증
+    category = db.get(Category, req.category_id)
+    topic = db.get(Topic, req.topic_id)
+    if (
+        not category
+        or not category.is_active
+        or not topic
+        or not topic.is_active
+        or topic.category_id != req.category_id
+    ):
         raise AppError(
             400,
             "VALIDATION_ERROR",
@@ -384,12 +367,12 @@ async def create_course(
 
     course = Course(
         instructor_id=current_user.id,
-        category_id=category_id,
-        topic_id=topic_id,
-        title=title_raw,
-        description=description_raw,
-        difficulty=difficulty_raw,
-        price_krw=price_krw,
+        category_id=req.category_id,
+        topic_id=req.topic_id,
+        title=req.title,
+        description=req.description,
+        difficulty=req.difficulty,
+        price_krw=req.price_krw,
         status="DRAFT",
     )
     db.add(course)
@@ -420,9 +403,10 @@ async def create_course(
 @router.patch("/courses/{course_id}", response_model=DataResponse[CourseMutationResponseData])
 async def update_course(
     course_id: int,
-    request: CourseUpdateRequest,
+    req: CourseUpdateRequest,
     db: DbSession,
     current_user: InstructorUser,
+    request: Request,
 ):
     course = verify_course_ownership(course_id, current_user.id, db)
 
@@ -434,41 +418,11 @@ async def update_course(
             "삭제는 공개된 적 없는 DRAFT 강좌만 가능합니다.",
         )
 
-    content_type = request.headers.get("content-type", "")
-    thumbnail: UploadFile | None = None
+    thumbnail = getattr(request.state, "thumbnail", None)
 
-    if "application/json" in content_type:
-        try:
-            body = await request.json()
-        except Exception as err:
-            raise AppError(400, "VALIDATION_ERROR", "입력값을 확인해 주세요.") from err
-        if not isinstance(body, dict):
-            raise AppError(400, "VALIDATION_ERROR", "입력값을 확인해 주세요.")
-        title_raw = body.get("title")
-        description_raw = body.get("description")
-        category_raw = body.get("categoryId", body.get("category_id"))
-        topic_raw = body.get("topicId", body.get("topic_id"))
-        difficulty_raw = body.get("difficulty")
-        price_raw = body.get("priceKrw", body.get("price_krw"))
-    else:
-        form = await request.form()
-        title_raw = form.get("title")
-        description_raw = form.get("description")
-        category_raw = form.get("categoryId", form.get("category_id"))
-        topic_raw = form.get("topicId", form.get("topic_id"))
-        difficulty_raw = form.get("difficulty")
-        price_raw = form.get("priceKrw", form.get("price_krw"))
-        thumb_val = form.get("thumbnail")
-        if isinstance(thumb_val, UploadFile) or hasattr(thumb_val, "filename"):
-            thumbnail = thumb_val  # type: ignore[assignment]
-
-    category_id = _parse_int_field(category_raw, "categoryId") if category_raw is not None else None
-    topic_id = _parse_int_field(topic_raw, "topicId") if topic_raw is not None else None
-    price_krw = _parse_int_field(price_raw, "priceKrw") if price_raw is not None else None
-
-    if category_id is not None or topic_id is not None:
-        target_category_id = category_id if category_id is not None else course.category_id
-        target_topic_id = topic_id if topic_id is not None else course.topic_id
+    if req.category_id is not None or req.topic_id is not None:
+        target_category_id = req.category_id if req.category_id is not None else course.category_id
+        target_topic_id = req.topic_id if req.topic_id is not None else course.topic_id
         category = db.get(Category, target_category_id)
         topic = db.get(Topic, target_topic_id)
         if (
@@ -486,25 +440,25 @@ async def update_course(
         course.category_id = target_category_id
         course.topic_id = target_topic_id
 
-    if title_raw is not None:
-        if not isinstance(title_raw, str) or not title_raw.strip() or len(title_raw) > 200:
+    if req.title is not None:
+        if not req.title.strip() or len(req.title) > 200:
             raise AppError(400, "VALIDATION_ERROR", "강좌 제목은 1~200자 이내로 입력해 주세요.")
-        course.title = title_raw
+        course.title = req.title
 
-    if description_raw is not None:
-        if not isinstance(description_raw, str) or not description_raw.strip():
+    if req.description is not None:
+        if not req.description.strip():
             raise AppError(400, "VALIDATION_ERROR", "강좌 소개를 입력해 주세요.")
-        course.description = description_raw
+        course.description = req.description
 
-    if difficulty_raw is not None:
-        if not isinstance(difficulty_raw, str) or difficulty_raw not in VALID_DIFFICULTIES:
+    if req.difficulty is not None:
+        if req.difficulty not in VALID_DIFFICULTIES:
             raise AppError(400, "VALIDATION_ERROR", "유효하지 않은 난이도입니다.")
-        course.difficulty = difficulty_raw
+        course.difficulty = req.difficulty
 
-    if price_krw is not None:
-        if price_krw < 0:
+    if req.price_krw is not None:
+        if req.price_krw < 0:
             raise AppError(400, "VALIDATION_ERROR", "가격 값이 올바르지 않습니다.")
-        course.price_krw = price_krw
+        course.price_krw = req.price_krw
 
     if thumbnail is not None:
         validate_thumbnail_file(thumbnail)

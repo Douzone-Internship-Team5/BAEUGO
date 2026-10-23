@@ -41,6 +41,12 @@ def test_course_search_all_cases(client: TestClient, db_session: Session):
     assert matched_item["thumbnailUrl"] == "/api/v1/media/courses/free_thumb.png"
     assert not any(c["courseId"] == c_paid.id for c in res_q.json()["data"]["items"])
 
+    # [성공 1-1] 검색어 일치 결과 없을 때 빈 목록 반환
+    res_no_match = client.get("/api/v1/courses?q=전혀존재하지않는키워드xyz")
+    assert res_no_match.status_code == 200
+    assert res_no_match.json()["data"]["total"] == 0
+    assert res_no_match.json()["data"]["items"] == []
+
     # [성공 2] 가격 필터 (price=free / price=paid)
     res_free = client.get("/api/v1/courses?price=free")
     assert res_free.status_code == 200
@@ -78,6 +84,18 @@ def test_course_search_all_cases(client: TestClient, db_session: Session):
     res_comb = client.get("/api/v1/courses?q=기획&categoryId=1&price=free&difficulty=BEGINNER")
     assert res_comb.status_code == 200
     assert any(c["courseId"] == c_free.id for c in res_comb.json()["data"]["items"])
+
+    # [성공 5-1] 페이징 정상 작동 (page=1&size=1, page=2&size=1)
+    res_p1 = client.get("/api/v1/courses?page=1&size=1")
+    assert res_p1.status_code == 200
+    assert len(res_p1.json()["data"]["items"]) == 1
+    assert res_p1.json()["data"]["page"] == 1
+    assert res_p1.json()["data"]["size"] == 1
+
+    res_p2 = client.get("/api/v1/courses?page=2&size=1")
+    assert res_p2.status_code == 200
+    assert len(res_p2.json()["data"]["items"]) == 1
+    assert res_p2.json()["data"]["page"] == 2
 
     # [성공 6] 정렬 (sort=difficulty, latest, popular)
     res_diff = client.get("/api/v1/courses?sort=difficulty")

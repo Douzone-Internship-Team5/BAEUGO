@@ -23,7 +23,6 @@ from app.models.base import Base
 if TYPE_CHECKING:
     from app.models.course import Course, Section
     from app.models.learning import Enrollment
-    from app.models.user import User
 
 
 class Quiz(Base):
