@@ -1,4 +1,4 @@
-"""create_b_domain_and_learning_tables
+"""create_course_and_learning_tables
 
 Revision ID: 15c93b5cbeeb
 Revises: c18105b3bd65
