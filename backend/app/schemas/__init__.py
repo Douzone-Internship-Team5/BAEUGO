@@ -36,11 +36,13 @@ from app.schemas.instructor import (
     ScriptSegment,
     ScriptUpdateRequest,
     SectionCreateRequest,
+    SectionDeleteResponseData,
     SectionResponseData,
     SectionUpdateRequest,
     StatsComparison,
     StatsPeriod,
     StatsSummary,
+    VideoDeleteResponseData,
     VideoResponseData,
 )
 
@@ -84,11 +86,13 @@ __all__ = [
     "ScriptSegment",
     "ScriptUpdateRequest",
     "SectionCreateRequest",
+    "SectionDeleteResponseData",
     "SectionResponseData",
     "SectionUpdateRequest",
     "StatsComparison",
     "StatsPeriod",
     "StatsSummary",
     "TopicSimple",
+    "VideoDeleteResponseData",
     "VideoResponseData",
 ]

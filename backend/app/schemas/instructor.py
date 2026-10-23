@@ -172,9 +172,15 @@ class SectionUpdateRequest(CamelModel):
 class SectionResponseData(CamelModel):
     section_id: int
     course_id: int
-    title: str | None = None
-    sort_order: int | None = None
+    title: str
+    sort_order: int
     is_active: bool
+
+
+class SectionDeleteResponseData(CamelModel):
+    section_id: int
+    course_id: int
+    is_active: bool = False
 
 
 # ==========================================
@@ -184,13 +190,19 @@ class VideoResponseData(CamelModel):
     video_id: int
     course_id: int
     section_id: int | None = None
-    video_type: str | None = None
-    title: str | None = None
-    duration_seconds: int | None = None
-    sort_order: int | None = None
-    stt_status: str | None = None
+    video_type: str
+    title: str
+    duration_seconds: int
+    sort_order: int
+    stt_status: str
     transcript_reviewed_at: datetime | None = None
     is_active: bool
+
+
+class VideoDeleteResponseData(CamelModel):
+    video_id: int
+    course_id: int
+    is_active: bool = False
 
 
 # ==========================================

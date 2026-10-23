@@ -581,7 +581,7 @@ def update_course_status(
             raise AppError(
                 409,
                 "CONFLICT",
-                "현재 강좌 상태에서는 요청한 상태로 전환할 수 없습니다.",
+                "현재 강좌 상태(OPERATOR_HIDDEN 등)에서는 요청한 상태로 전환할 수 없습니다.",
             )
 
         # 6대 공개 조건 검증
@@ -620,13 +620,14 @@ def update_course_status(
             raise AppError(
                 409,
                 "CONFLICT",
-                "현재 강좌 상태에서는 요청한 상태로 전환할 수 없습니다.",
+                "현재 강좌 상태(OPERATOR_HIDDEN 등)에서는 요청한 상태로 전환할 수 없습니다.",
             )
 
         now = datetime.now(UTC)
         course.status = "EDITING"
         course.closed_by_user_id = current_user.id
         course.closed_at = now
+        course.closed_reason = None
         db.commit()
         db.refresh(course)
 

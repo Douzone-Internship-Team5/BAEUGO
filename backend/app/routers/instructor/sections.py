@@ -14,6 +14,7 @@ from app.models.course import Quiz, Section
 from app.schemas.common import DataResponse
 from app.schemas.instructor import (
     SectionCreateRequest,
+    SectionDeleteResponseData,
     SectionResponseData,
     SectionUpdateRequest,
 )
@@ -105,7 +106,7 @@ def update_section(
     )
 
 
-@router.delete("/sections/{section_id}", response_model=DataResponse[SectionResponseData])
+@router.delete("/sections/{section_id}", response_model=DataResponse[SectionDeleteResponseData])
 def delete_section(
     section_id: int,
     db: DbSession,
@@ -130,7 +131,7 @@ def delete_section(
 
     db.commit()
     return DataResponse(
-        data=SectionResponseData(
+        data=SectionDeleteResponseData(
             section_id=section.id,
             course_id=section.course_id,
             is_active=False,

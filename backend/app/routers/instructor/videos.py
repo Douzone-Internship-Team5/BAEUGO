@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 from typing import Annotated
+from uuid import uuid4
 
 from fastapi import APIRouter, File, Form, Request, UploadFile
 from sqlalchemy import delete, func, select
@@ -21,9 +22,13 @@ from app.schemas.instructor import (
     ScriptResponseData,
     ScriptSegment,
     ScriptUpdateRequest,
+    VideoDeleteResponseData,
     VideoResponseData,
 )
 from app.services.storage import (
+    extract_video_duration,
+    extract_video_thumbnail,
+    get_media_dir,
     save_upload_file,
     validate_thumbnail_file,
     validate_video_file,
@@ -90,18 +95,29 @@ def upload_video(
         )
         sort_order = (max_order or 0) + 1
 
-    # 파일 저장
+    # 파일 저장 및 실제 영상 재생 시간 추출 (실패 시 기본 360초 폴백)
     video_key = save_upload_file(file, f"courses/{course.id}/videos", "video")
+    media_dir = get_media_dir()
+    extracted_duration = extract_video_duration(media_dir / video_key)
+    duration_seconds = extracted_duration if extracted_duration is not None else 360
+
     thumb_key = None
     if thumbnail is not None:
         thumb_key = save_upload_file(thumbnail, f"courses/{course.id}/videos", "vthumb")
+    else:
+        # 미입력 시 FFmpeg로 첫 프레임 추출하여 videos.thumbnail_storage_key 저장
+        auto_thumb_name = f"vthumb_{uuid4().hex[:8]}.jpg"
+        rel_key = f"courses/{course.id}/videos/{auto_thumb_name}"
+        auto_thumb_path = media_dir / rel_key
+        if extract_video_thumbnail(media_dir / video_key, auto_thumb_path):
+            thumb_key = rel_key
 
     video = Video(
         course_id=course.id,
         section_id=section_id,
         video_type=video_type,
         title=title,
-        duration_seconds=360,  # 기본/모의 재생 시간
+        duration_seconds=duration_seconds,
         sort_order=sort_order,
         video_storage_key=video_key,
         thumbnail_storage_key=thumb_key,
@@ -239,16 +255,30 @@ async def update_or_replace_video(
         video.is_active = False
 
         new_video_key = save_upload_file(file, f"courses/{course.id}/videos", "video")
+        media_dir = get_media_dir()
+        extracted_duration = extract_video_duration(media_dir / new_video_key)
+        new_duration = (
+            extracted_duration
+            if extracted_duration is not None
+            else (video.duration_seconds or 360)
+        )
+
         new_thumb_key = video.thumbnail_storage_key
         if thumbnail is not None:
             new_thumb_key = save_upload_file(thumbnail, f"courses/{course.id}/videos", "vthumb")
+        else:
+            auto_thumb_name = f"vthumb_{uuid4().hex[:8]}.jpg"
+            rel_key = f"courses/{course.id}/videos/{auto_thumb_name}"
+            auto_thumb_path = media_dir / rel_key
+            if extract_video_thumbnail(media_dir / new_video_key, auto_thumb_path):
+                new_thumb_key = rel_key
 
         new_video = Video(
             course_id=video.course_id,
             section_id=video.section_id,
             video_type=video.video_type,
             title=title if title is not None else video.title,
-            duration_seconds=video.duration_seconds,
+            duration_seconds=new_duration,
             sort_order=sort_order if sort_order is not None else video.sort_order,
             video_storage_key=new_video_key,
             thumbnail_storage_key=new_thumb_key,
@@ -329,7 +359,7 @@ async def update_or_replace_video(
     )
 
 
-@router.delete("/videos/{video_id}", response_model=DataResponse[VideoResponseData])
+@router.delete("/videos/{video_id}", response_model=DataResponse[VideoDeleteResponseData])
 def delete_video(
     video_id: int,
     db: DbSession,
@@ -346,7 +376,7 @@ def delete_video(
     db.commit()
 
     return DataResponse(
-        data=VideoResponseData(
+        data=VideoDeleteResponseData(
             video_id=video.id,
             course_id=video.course_id,
             is_active=False,
