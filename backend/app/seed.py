@@ -5,6 +5,7 @@
 - 직무·주제: 없으면 넣고, 있으면 이름·정렬 순서를 이 파일 기준으로 맞춘다.
   목록에서 빠진 행은 지우지 않는다.
 - 목업 계정: 없는 계정만 넣고, 이미 있는 계정은 건드리지 않는다.
+- 학습 목표: 계정이 이미 있어도 목표가 없으면 넣는다 (기존 DB의 learner2에도 들어가도록).
 """
 
 import logging
@@ -23,6 +24,7 @@ from app.models import (
     InstructorTopic,
     LearnerProfile,
     LearnerTopicInterest,
+    LearningGoal,
     Role,
     Topic,
     User,
@@ -64,6 +66,7 @@ class SeedAccount:
     roles: list[Role] = field(default_factory=list)
     learner_profile: dict | None = None
     learner_topic_ids: list[int] = field(default_factory=list)
+    daily_target_minutes: int | None = None
     instructor_profile: dict | None = None
     instructor_topic_ids: list[int] = field(default_factory=list)
 
@@ -81,6 +84,7 @@ SEED_ACCOUNTS = [
             "demo_payment_label": "신한카드 (1234)",
         },
         learner_topic_ids=[11],
+        daily_target_minutes=20,
     ),
     SeedAccount(
         email="instructor1@baeugo.test",
@@ -189,10 +193,23 @@ def add_account(db: Session, account: SeedAccount) -> None:
     db.flush()
 
 
+def seed_learning_goals(db: Session) -> None:
+    for account in SEED_ACCOUNTS:
+        if account.daily_target_minutes is None:
+            continue
+        learner_id = db.scalar(select(User.id).where(User.email == account.email))
+        db.execute(
+            insert(LearningGoal)
+            .values(learner_id=learner_id, daily_target_minutes=account.daily_target_minutes)
+            .on_conflict_do_nothing()
+        )
+
+
 def seed(db: Session) -> None:
     seed_categories(db)
     seed_topics(db)
     seed_accounts(db)
+    seed_learning_goals(db)
     db.commit()
 
 

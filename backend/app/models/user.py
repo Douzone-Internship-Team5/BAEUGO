@@ -8,6 +8,7 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 from app.models.base import Base
 
 if TYPE_CHECKING:
+    from app.models.goal import LearningGoal
     from app.models.profile import InstructorProfile, LearnerProfile
 
 
@@ -37,6 +38,7 @@ class User(Base):
     roles: Mapped[list["UserRole"]] = relationship(cascade="all, delete-orphan")
     learner_profile: Mapped["LearnerProfile | None"] = relationship()
     instructor_profile: Mapped["InstructorProfile | None"] = relationship()
+    learning_goal: Mapped["LearningGoal | None"] = relationship()
 
     @property
     def is_login_allowed(self) -> bool:
