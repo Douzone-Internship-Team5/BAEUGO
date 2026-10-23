@@ -214,6 +214,7 @@ def seed(db: Session) -> None:
     seed_categories(db)
     seed_topics(db)
     seed_accounts(db)
+    reset_id_sequence(db, User.__tablename__)
     seed_learning_goals(db)
     db.commit()
 
