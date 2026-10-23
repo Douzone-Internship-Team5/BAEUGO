@@ -1,7 +1,10 @@
 from app.models.base import Base, TimestampMixin
-from app.models.category import Category, Topic
 from app.models.course import Course, Section
 from app.models.learning import Enrollment, StudyActivitySession, VideoProgress
+# 새 모델 파일을 만들면 여기에서 import해야 Alembic이 테이블을 인식한다.
+from app.models.attendance import AttendanceDay
+from app.models.category import Category, Topic
+from app.models.goal import LearningGoal, LearningTimeSlot
 from app.models.profile import (
     InstructorProfile,
     InstructorTopic,
@@ -24,6 +27,7 @@ from app.models.video import Video, VideoLike, VideoScript, VideoView
 __all__ = [
     "AccountType",
     "AttemptQuestion",
+    "AttendanceDay",
     "Base",
     "Category",
     "Course",
@@ -39,6 +43,8 @@ __all__ = [
     "QuestionRecord",
     "Quiz",
     "QuizAttempt",
+    "LearningGoal",
+    "LearningTimeSlot",
     "Role",
     "Section",
     "StudyActivitySession",

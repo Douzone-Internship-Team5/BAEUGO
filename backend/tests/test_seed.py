@@ -3,7 +3,7 @@ from sqlalchemy import func, select
 from alembic.autogenerate import compare_metadata
 from alembic.migration import MigrationContext
 from app.core.security import verify_password
-from app.models import Base, Category, Topic, User, UserRole
+from app.models import Base, Category, LearningGoal, Topic, User, UserRole
 from app.seed import SEED_ACCOUNTS, SEED_PASSWORD, TOPIC_NAMES, seed
 
 
@@ -18,11 +18,15 @@ def test_migration_matches_models(db):
 
 
 def test_seed_is_idempotent(db):
-    counts_before = [count_rows(db, model) for model in (User, UserRole, Category, Topic)]
+    counts_before = [
+        count_rows(db, model) for model in (User, UserRole, Category, Topic, LearningGoal)
+    ]
 
     seed(db)
 
-    counts_after = [count_rows(db, model) for model in (User, UserRole, Category, Topic)]
+    counts_after = [
+        count_rows(db, model) for model in (User, UserRole, Category, Topic, LearningGoal)
+    ]
     assert counts_after == counts_before
     assert counts_before[0] == len(SEED_ACCOUNTS)
 
@@ -98,3 +102,21 @@ def test_new_topic_gets_id_after_seeded_ones(db):
     db.flush()
 
     assert topic.id > 73
+
+
+def test_seed_adds_learning_goal_for_learner2(db):
+    learner = db.scalars(select(User).where(User.email == "learner2@baeugo.test")).one()
+
+    goal = db.get(LearningGoal, learner.id)
+
+    assert (goal.daily_target_minutes, goal.time_zone) == (20, "Asia/Seoul")
+
+
+def test_seed_adds_missing_learning_goal_to_existing_account(db):
+    learner = db.scalars(select(User).where(User.email == "learner2@baeugo.test")).one()
+    db.delete(db.get(LearningGoal, learner.id))
+    db.flush()
+
+    seed(db)
+
+    assert db.get(LearningGoal, learner.id).daily_target_minutes == 20
