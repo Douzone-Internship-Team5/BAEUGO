@@ -92,6 +92,11 @@ def db(prepared_database: None) -> Generator[Session, None, None]:
 
 
 @pytest.fixture
+def db_session(db: Session) -> Session:
+    return db
+
+
+@pytest.fixture
 def client(db: Session) -> Generator[TestClient, None, None]:
     app.dependency_overrides[get_db] = lambda: db
     with TestClient(app) as test_client:

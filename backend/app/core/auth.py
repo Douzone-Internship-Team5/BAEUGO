@@ -7,16 +7,22 @@
     user: InstructorUser   강사 모드 전용
 """
 
+from __future__ import annotations
+
 from collections.abc import Callable
-from typing import Annotated
+from typing import TYPE_CHECKING, Annotated
 
 from fastapi import Depends
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+from sqlalchemy.orm import Session
 
 from app.core.database import DbSession
 from app.core.errors import AppError
 from app.core.security import decode_access_token
 from app.models.user import AccountType, Role, User
+
+if TYPE_CHECKING:
+    from app.models.course import Course, Section, Video
 
 # 기본값(auto_error=True)이면 헤더가 없을 때 FastAPI가 403을 보내므로 직접 401로 처리한다.
 bearer_scheme = HTTPBearer(auto_error=False)
@@ -67,6 +73,84 @@ def require_mode(role: Role) -> Callable[[User], User]:
     return check_mode
 
 
+get_current_learner = require_mode(Role.LEARNER)
+get_current_instructor = require_mode(Role.INSTRUCTOR)
+
 OperatorUser = Annotated[User, Depends(require_operator)]
-LearnerUser = Annotated[User, Depends(require_mode(Role.LEARNER))]
-InstructorUser = Annotated[User, Depends(require_mode(Role.INSTRUCTOR))]
+LearnerUser = Annotated[User, Depends(get_current_learner)]
+InstructorUser = Annotated[User, Depends(get_current_instructor)]
+
+
+def get_optional_current_user(
+    db: DbSession,
+    credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer_scheme)] = None,
+) -> User | None:
+    if credentials is None:
+        return None
+    token = (
+        credentials.credentials
+        if isinstance(credentials, HTTPAuthorizationCredentials)
+        else str(credentials)
+    )
+    if token.startswith("Bearer "):
+        token = token[len("Bearer ") :].strip()
+    user_id = decode_access_token(token)
+    if user_id is None:
+        return None
+    user = db.get(User, user_id)
+    if user is None or not user.is_login_allowed:
+        return None
+    return user
+
+
+OptionalUser = Annotated[User | None, Depends(get_optional_current_user)]
+
+
+# ==========================================
+# 강사 소유권 검증 헬퍼 (타인 소유 시 404 NOT_FOUND 반환)
+# ==========================================
+
+
+def verify_course_ownership(course_id: int, instructor_id: int, db: Session) -> Course:
+    from app.models.course import Course
+
+    course = db.get(Course, course_id)
+    if not course or course.instructor_id != instructor_id:
+        raise AppError(404, "NOT_FOUND", "존재하지 않거나 접근 권한이 없는 강좌입니다.")
+    return course
+
+
+def verify_section_ownership(
+    section_id: int,
+    instructor_id: int,
+    db: Session,
+    course_id: int | None = None,
+) -> Section:
+    from app.models.course import Course, Section
+
+    section = db.get(Section, section_id)
+    if not section or not section.is_active:
+        raise AppError(404, "NOT_FOUND", "섹션 또는 강좌를 찾을 수 없습니다.")
+
+    if course_id is not None and section.course_id != course_id:
+        raise AppError(404, "NOT_FOUND", "섹션 또는 강좌를 찾을 수 없습니다.")
+
+    course = db.get(Course, section.course_id)
+    if not course or course.instructor_id != instructor_id:
+        raise AppError(404, "NOT_FOUND", "섹션 또는 강좌를 찾을 수 없습니다.")
+
+    return section
+
+
+def verify_video_ownership(video_id: int, instructor_id: int, db: Session) -> Video:
+    from app.models.course import Course, Video
+
+    video = db.get(Video, video_id)
+    if not video or not video.is_active:
+        raise AppError(404, "NOT_FOUND", "영상 또는 섹션을 찾을 수 없습니다.")
+
+    course = db.get(Course, video.course_id)
+    if not course or course.instructor_id != instructor_id:
+        raise AppError(404, "NOT_FOUND", "영상 또는 섹션을 찾을 수 없습니다.")
+
+    return video
