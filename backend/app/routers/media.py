@@ -28,14 +28,12 @@ def serve_media_file(storage_key: str):
     if not file_path.is_relative_to(media_dir) or not file_path.is_file():
         raise AppError(404, "NOT_FOUND", "이미지를 찾을 수 없습니다.")
 
-    # 파일 확장자에 따른 Content-Type
+    # 파일 확장자 검증: 명세에 따라 jpg, jpeg, png만 허용 (영상 및 기타 확장자 차단)
     ext = file_path.suffix.lower()
-    if ext == ".png":
-        media_type = "image/png"
-    elif ext == ".webp":
-        media_type = "image/webp"
-    else:
-        media_type = "image/jpeg"
+    if ext not in {".jpg", ".jpeg", ".png"}:
+        raise AppError(404, "NOT_FOUND", "이미지를 찾을 수 없습니다.")
+
+    media_type = "image/png" if ext == ".png" else "image/jpeg"
     return FileResponse(file_path, media_type=media_type)
 
 
@@ -49,18 +47,23 @@ def stream_video(
     if not video or not video.is_active:
         raise AppError(404, "NOT_FOUND", "영상 파일을 찾을 수 없습니다.")
 
-    # 학습 영상(LESSON)은 수강 중인 학습자, 담당 강사, 운영자만 시청 가능
-    if video.video_type == "LESSON":
-        if not current_user:
-            raise AppError(
-                403, "FORBIDDEN", "수강 중인 학습자 또는 담당 강사만 시청할 수 있습니다."
-            )
+    course = video.course or db.get(Course, video.course_id)
+    if not course:
+        raise AppError(404, "NOT_FOUND", "영상 파일을 찾을 수 없습니다.")
 
-        course = video.course or db.get(Course, video.course_id)
-        is_owner_instructor = course is not None and course.instructor_id == current_user.id
-        is_operator = (
-            current_user.account_type == "OPERATOR" or current_user.active_mode == "OPERATOR"
-        )
+    is_owner_instructor = current_user is not None and course.instructor_id == current_user.id
+    is_operator = current_user is not None and (
+        current_user.account_type == "OPERATOR" or current_user.active_mode == "OPERATOR"
+    )
+
+    # 무료 OT(OT)는 공개 강좌면 즉시 제공하고, 미공개 강좌면 담당 강사나 운영자만 가능
+    if video.video_type == "OT":
+        if course.status != "PUBLISHED" and not (is_owner_instructor or is_operator):
+            raise AppError(403, "FORBIDDEN", "영상 시청 권한이 없거나 잠금 상태입니다.")
+    elif video.video_type == "LESSON":
+        if not current_user:
+            raise AppError(403, "FORBIDDEN", "영상 시청 권한이 없거나 잠금 상태입니다.")
+
         is_enrolled = (
             db.scalar(
                 select(Enrollment.id).where(
@@ -71,9 +74,7 @@ def stream_video(
             is not None
         )
         if not (is_owner_instructor or is_operator or is_enrolled):
-            raise AppError(
-                403, "FORBIDDEN", "수강 중인 학습자 또는 담당 강사만 시청할 수 있습니다."
-            )
+            raise AppError(403, "FORBIDDEN", "영상 시청 권한이 없거나 잠금 상태입니다.")
 
     media_dir = get_media_dir().resolve()
     try:

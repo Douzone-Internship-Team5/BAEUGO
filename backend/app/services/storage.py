@@ -1,5 +1,6 @@
 import os
 import shutil
+import subprocess
 from pathlib import Path
 from uuid import uuid4
 
@@ -38,6 +39,74 @@ def validate_video_file(file: UploadFile) -> None:
     size = _get_upload_file_size(file)
     if size <= 0 or size > MAX_VIDEO_SIZE:
         raise AppError(400, "INVALID_FILE", "재생할 수 없거나 200MB를 초과한 영상 파일입니다.")
+
+
+def extract_video_duration(file_path: Path) -> int | None:
+    """FFprobe를 통해 실제 동영상 재생 길이(초)를 추출한다.
+
+    추출 실패(더미 파일, 미디어 파싱 오류, 타임아웃 등) 시 None을 반환한다.
+    """
+    try:
+        cmd = [
+            "ffprobe",
+            "-v",
+            "error",
+            "-show_entries",
+            "format=duration",
+            "-of",
+            "default=noprint_wrappers=1:nokey=1",
+            str(file_path),
+        ]
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=5)
+        if result.returncode == 0 and result.stdout.strip():
+            duration = float(result.stdout.strip())
+            if duration > 0:
+                return max(1, round(duration))
+    except Exception:
+        pass
+    return None
+
+
+def extract_video_thumbnail(video_path: Path, output_path: Path) -> bool:
+    """FFmpeg를 통해 동영상의 첫 프레임을 추출하여 이미지 파일로 저장한다.
+
+    성공 시 True, 실패 시 False를 반환한다.
+    """
+    try:
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        cmd = [
+            "ffmpeg",
+            "-y",
+            "-ss",
+            "00:00:00.500",
+            "-i",
+            str(video_path),
+            "-vframes",
+            "1",
+            "-q:v",
+            "2",
+            str(output_path),
+        ]
+        result = subprocess.run(cmd, capture_output=True, timeout=5)
+        if result.returncode == 0 and output_path.exists() and output_path.stat().st_size > 0:
+            return True
+        cmd2 = [
+            "ffmpeg",
+            "-y",
+            "-ss",
+            "00:00:00",
+            "-i",
+            str(video_path),
+            "-vframes",
+            "1",
+            "-q:v",
+            "2",
+            str(output_path),
+        ]
+        result2 = subprocess.run(cmd2, capture_output=True, timeout=5)
+        return result2.returncode == 0 and output_path.exists() and output_path.stat().st_size > 0
+    except Exception:
+        return False
 
 
 def get_media_dir() -> Path:
