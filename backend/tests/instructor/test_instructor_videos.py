@@ -9,6 +9,77 @@ from app.models.quiz import Quiz
 from app.models.video import Video
 
 
+def test_b6_duplicate_lesson_order_is_rejected(client: TestClient, db: Session, monkeypatch):
+    course = Course(
+        instructor_id=6,
+        category_id=1,
+        topic_id=11,
+        title="영상 순서 검증",
+        description="설명",
+        difficulty="BEGINNER",
+        price_krw=0,
+        status="DRAFT",
+    )
+    db.add(course)
+    db.flush()
+    section = Section(course_id=course.id, title="섹션", sort_order=1)
+    other_section = Section(course_id=course.id, title="다른 섹션", sort_order=2)
+    db.add_all([section, other_section])
+    db.flush()
+
+    def add_video(section_id, order, *, is_active=True):
+        video = Video(
+            course_id=course.id,
+            section_id=section_id,
+            video_type="LESSON",
+            title="기존 영상",
+            duration_seconds=60,
+            sort_order=order,
+            video_storage_key=f"test/{section_id}_{order}.mp4",
+            is_active=is_active,
+        )
+        db.add(video)
+        return video
+
+    first = add_video(section.id, 1)
+    target = add_video(section.id, 2)
+    add_video(section.id, 3, is_active=False)
+    add_video(other_section.id, 3)
+    db.commit()
+
+    def unexpected_save(*args, **kwargs):
+        raise AssertionError("중복 순서 요청은 파일 저장 전에 거부해야 한다.")
+
+    monkeypatch.setattr("app.routers.instructor.videos.save_video_file", unexpected_save)
+    path = f"/api/v1/instructor/videos/{target.id}"
+    responses = [
+        client.patch(path, json={"sortOrder": 1, "title": "변경 시도"}),
+        client.patch(
+            path,
+            data={"sortOrder": "1", "title": "교체 시도"},
+            files={"file": ("new.mp4", b"dummy", "video/mp4")},
+        ),
+    ]
+    for response in responses:
+        assert response.status_code == 400
+        assert response.json()["error"]["code"] == "VALIDATION_ERROR"
+    db.refresh(target)
+    db.refresh(first)
+    assert target.is_active
+    assert target.title == "기존 영상"
+    assert target.video_storage_key == f"test/{section.id}_2.mp4"
+    assert target.sort_order == 2
+    assert first.sort_order == 1
+
+    # 본인의 기존 순서는 허용하고, 비활성 영상·다른 섹션은 중복 대상에서 제외한다.
+    assert client.patch(path, json={"sortOrder": 2}).status_code == 200
+    moved = client.patch(path, json={"sortOrder": 3})
+    assert moved.status_code == 200
+    assert moved.json()["data"]["sortOrder"] == 3
+    db.refresh(first)
+    assert first.sort_order == 1
+
+
 def test_b6_videos_crud_and_replacement(client: TestClient, db_session: Session):
     # Swagger가 실제 서버에서 받는 camelCase 폼 이름을 안내해야 한다.
     schema = client.get("/openapi.json").json()

@@ -228,6 +228,27 @@ async def update_or_replace_video(
         if (video.video_type == "LESSON" and sort_order < 1) or sort_order < 0:
             raise AppError(400, "VALIDATION_ERROR", "정렬 순서(sortOrder) 값이 올바르지 않습니다.")
 
+    if video.video_type == "LESSON" and (sort_order is not None or file is not None):
+        target_order = sort_order if sort_order is not None else video.sort_order
+        duplicate_id = db.scalar(
+            select(Video.id)
+            .where(
+                Video.course_id == video.course_id,
+                Video.section_id == video.section_id,
+                Video.video_type == "LESSON",
+                Video.is_active.is_(True),
+                Video.id != video.id,
+                Video.sort_order == target_order,
+            )
+            .limit(1)
+        )
+        if duplicate_id is not None:
+            raise AppError(
+                400,
+                "VALIDATION_ERROR",
+                "같은 섹션의 활성 학습 영상과 정렬 순서(sortOrder)가 중복됩니다.",
+            )
+
     if file is not None:
         validate_video_file(file)
     if thumbnail is not None:
