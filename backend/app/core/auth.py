@@ -111,10 +111,12 @@ OptionalUser = Annotated[User | None, Depends(get_optional_current_user)]
 # ==========================================
 
 
-def verify_course_ownership(course_id: int, instructor_id: int, db: Session) -> Course:
+def verify_course_ownership(
+    course_id: int, instructor_id: int, db: Session, *, for_update: bool = False
+) -> Course:
     from app.models.course import Course
 
-    course = db.get(Course, course_id)
+    course = db.get(Course, course_id, with_for_update=for_update, populate_existing=for_update)
     if not course or course.instructor_id != instructor_id:
         raise AppError(404, "NOT_FOUND", "존재하지 않거나 접근 권한이 없는 강좌입니다.")
     return course
@@ -125,10 +127,15 @@ def verify_section_ownership(
     instructor_id: int,
     db: Session,
     course_id: int | None = None,
+    *,
+    for_update: bool = False,
 ) -> Section:
     from app.models.course import Course, Section
 
     section = db.get(Section, section_id)
+    if section is not None and for_update:
+        verify_course_ownership(section.course_id, instructor_id, db, for_update=True)
+        db.refresh(section)
     if not section or not section.is_active:
         raise AppError(404, "NOT_FOUND", "섹션 또는 강좌를 찾을 수 없습니다.")
 
@@ -142,10 +149,15 @@ def verify_section_ownership(
     return section
 
 
-def verify_video_ownership(video_id: int, instructor_id: int, db: Session) -> Video:
+def verify_video_ownership(
+    video_id: int, instructor_id: int, db: Session, *, for_update: bool = False
+) -> Video:
     from app.models.course import Course, Video
 
     video = db.get(Video, video_id)
+    if video is not None and for_update:
+        verify_course_ownership(video.course_id, instructor_id, db, for_update=True)
+        db.refresh(video)
     if not video or not video.is_active:
         raise AppError(404, "NOT_FOUND", "영상 또는 섹션을 찾을 수 없습니다.")
 

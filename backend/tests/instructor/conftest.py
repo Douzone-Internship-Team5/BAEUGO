@@ -43,7 +43,11 @@ class InstructorTestClient(TestClient):
 
 
 @pytest.fixture
-def client(db: Session) -> Generator[TestClient, None, None]:
+def client(db: Session, monkeypatch) -> Generator[TestClient, None, None]:
+    # API 계약 테스트의 가짜 영상은 실제 추론을 하지 않는다. 작업 저장은 별도 테스트한다.
+    monkeypatch.setattr("app.services.processing.jobs.run_job", lambda job_id: None)
+    monkeypatch.setattr("app.services.processing.jobs.run_section", lambda section_id: None)
+    monkeypatch.setattr("app.services.storage.extract_video_duration", lambda path: 60)
     app.dependency_overrides[get_db] = lambda: db
     with InstructorTestClient(app) as test_client:
         yield test_client

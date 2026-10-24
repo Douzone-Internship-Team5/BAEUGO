@@ -19,6 +19,7 @@ from app.schemas.section import (
     SectionResponseData,
     SectionUpdateRequest,
 )
+from app.services.processing import jobs
 
 router = APIRouter(tags=["instructor-sections"])
 
@@ -32,7 +33,7 @@ def create_section(
     db: DbSession,
     current_user: InstructorUser,
 ):
-    course = verify_course_ownership(req.course_id, current_user.id, db)
+    course = verify_course_ownership(req.course_id, current_user.id, db, for_update=True)
     if course.status not in ("DRAFT", "EDITING"):
         raise AppError(
             409, "CONFLICT", "DRAFT 또는 EDITING 상태인 강좌에서만 섹션을 편집할 수 있습니다."
@@ -75,7 +76,7 @@ def update_section(
     db: DbSession,
     current_user: InstructorUser,
 ):
-    section = verify_section_ownership(section_id, current_user.id, db)
+    section = verify_section_ownership(section_id, current_user.id, db, for_update=True)
     course = section.course
     if course.status not in ("DRAFT", "EDITING"):
         raise AppError(
@@ -113,7 +114,7 @@ def delete_section(
     db: DbSession,
     current_user: InstructorUser,
 ):
-    section = verify_section_ownership(section_id, current_user.id, db)
+    section = verify_section_ownership(section_id, current_user.id, db, for_update=True)
     course = section.course
     if course.status not in ("DRAFT", "EDITING"):
         raise AppError(
@@ -122,8 +123,10 @@ def delete_section(
 
     # 물리 삭제 금지: is_active = False 처리 (하위 영상 및 퀴즈도 비활성화)
     section.is_active = False
+    jobs.cancel_jobs(db, section_id=section.id)
     for v in section.videos:
         v.is_active = False
+        jobs.cancel_jobs(db, video_id=v.id)
     active_quizzes = db.scalars(
         select(Quiz).where(Quiz.section_id == section.id, Quiz.is_active.is_(True))
     ).all()

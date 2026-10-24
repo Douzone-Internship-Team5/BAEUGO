@@ -408,7 +408,7 @@ async def update_course(
     current_user: InstructorUser,
     request: Request,
 ):
-    course = verify_course_ownership(course_id, current_user.id, db)
+    course = verify_course_ownership(course_id, current_user.id, db, for_update=True)
 
     if course.status not in ("DRAFT", "EDITING"):
         raise AppError(
@@ -489,7 +489,7 @@ def delete_course(
     db: DbSession,
     current_user: InstructorUser,
 ):
-    course = verify_course_ownership(course_id, current_user.id, db)
+    course = verify_course_ownership(course_id, current_user.id, db, for_update=True)
 
     # 한 번도 공개된 적 없는 DRAFT 강좌만 물리 삭제 가능
     if course.status != "DRAFT" or course.published_at is not None:
@@ -519,6 +519,7 @@ def update_course_status(
     db: DbSession,
     current_user: InstructorUser,
 ):
+    verify_course_ownership(course_id, current_user.id, db, for_update=True)
     course = db.scalar(
         select(Course)
         .where(Course.id == course_id, Course.instructor_id == current_user.id)
