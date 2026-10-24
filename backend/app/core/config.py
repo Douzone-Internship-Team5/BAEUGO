@@ -16,6 +16,12 @@ class Settings(BaseSettings):
 
     cors_origins: list[str] = ["http://localhost:3000"]
     media_root: str = "/data/media"
+    gemini_api_key: str = ""
+    gemini_model: str = ""
+    gemini_review_model: str = ""
+    whisper_model_dir: str = "/data/models/whisper"
+    whisper_device: str = "cpu"
+    whisper_cpu_threads: int = 4
 
 
 @lru_cache
