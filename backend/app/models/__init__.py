@@ -5,6 +5,7 @@ from app.models.category import Category, Topic
 from app.models.course import Course, Section
 from app.models.goal import LearningGoal, LearningTimeSlot
 from app.models.learning import Enrollment, StudyActivitySession, VideoProgress
+from app.models.processing import ProcessingJob
 from app.models.profile import (
     InstructorProfile,
     InstructorTopic,
@@ -37,6 +38,7 @@ __all__ = [
     "InstructorTopic",
     "LearnerProfile",
     "LearnerTopicInterest",
+    "ProcessingJob",
     "Question",
     "QuestionAnswer",
     "QuestionChoice",
