@@ -5,6 +5,7 @@ from datetime import UTC, datetime
 from types import SimpleNamespace
 
 import pytest
+from fastapi import BackgroundTasks
 from sqlalchemy import select
 
 from app.core.errors import AppError
@@ -198,7 +199,11 @@ def test_invalid_manual_script_preserves_saved_script_and_job(db, processing_cas
     for segments in invalid_segments:
         with pytest.raises(AppError) as caught:
             update_video_script(
-                video.id, ScriptUpdateRequest(segments=segments), db, SimpleNamespace(id=6)
+                video.id,
+                ScriptUpdateRequest(segments=segments),
+                db,
+                SimpleNamespace(id=6),
+                BackgroundTasks(),
             )
         assert caught.value.status_code == 400
         assert caught.value.code == "VALIDATION_ERROR"
@@ -224,6 +229,7 @@ def test_manual_script_and_video_delete_do_not_regenerate_quiz(db, processing_ca
     db.commit()
     db.refresh(quiz)
     reviewed_at = quiz.reviewed_at
+    background_tasks = BackgroundTasks()
     response = update_video_script(
         video.id,
         ScriptUpdateRequest(
@@ -234,7 +240,9 @@ def test_manual_script_and_video_delete_do_not_regenerate_quiz(db, processing_ca
         ),
         db,
         SimpleNamespace(id=6),
+        background_tasks,
     )
+    assert background_tasks.tasks == []
     assert [segment.seq for segment in response.data.segments] == [1, 2]
     assert video.transcript_reviewed_at is not None
     assert section_input(db, section.id).videos[0].transcript.segments[-1].end_ms == 61000
@@ -298,10 +306,14 @@ def test_rejected_quiz_is_not_saved_as_completed(db, processing_case, monkeypatc
     assert quiz.questions == []
     failed = db.scalar(select(ProcessingJob).where(ProcessingJob.kind == "QUIZ"))
     assert failed.artifacts["review"]["section_passed"] is False
+    background_tasks = _save_manual_script(db, video)
+    assert background_tasks.tasks == []
+    assert quiz.ai_status == "FAILED"
+    assert failed.status == "FAILED"
 
 
 def test_correction_failure_preserves_raw_transcript(db, processing_case, monkeypatch):
-    _, _, video = processing_case
+    _, section, video = processing_case
 
     def reject(request):
         raise ProcessingError("INVALID_CORRECTION")
@@ -316,6 +328,7 @@ def test_correction_failure_preserves_raw_transcript(db, processing_case, monkey
     assert video.stt_status == "FAILED"
     assert job.artifacts["raw"]["segments"][0]["content"] == "원본 대본"
     assert video.scripts == []
+    assert jobs.active_unit_quiz(db, section.id).ai_status == "FAILED"
 
 
 def test_manual_script_wins_over_running_processing(db, processing_case, monkeypatch):
@@ -344,19 +357,21 @@ def test_manual_script_wins_over_running_processing(db, processing_case, monkeyp
 
 
 def test_new_request_supersedes_old_token(db, processing_case):
-    _, _, video = processing_case
+    _, section, video = processing_case
     old = jobs.queue_video(db, video)
     new = jobs.queue_video(db, video)
     db.commit()
     jobs.run_job(old.id)
     assert old.status == "SUPERSEDED"
     assert video.stt_status == "PENDING"
+    jobs._fail(old.id, "LATE_FAILURE")
+    assert jobs.active_unit_quiz(db, section.id).ai_status == "PENDING"
     jobs.run_job(new.id)
     assert new.status == "COMPLETED"
 
 
 def test_input_change_discards_late_result(db, processing_case, monkeypatch):
-    course, _, video = processing_case
+    course, section, video = processing_case
 
     def change_title(request):
         course.title = "변경된 강좌"
@@ -373,6 +388,146 @@ def test_input_change_discards_late_result(db, processing_case, monkeypatch):
     assert job.error_code == "INPUT_CHANGED"
     assert video.stt_status == "FAILED"
     assert video.scripts == []
+    assert jobs.active_unit_quiz(db, section.id).ai_status == "FAILED"
+
+
+def _save_manual_script(db, video):
+    background_tasks = BackgroundTasks()
+    update_video_script(
+        video.id,
+        ScriptUpdateRequest(
+            segments=[ScriptSegment(seq=1, start_ms=0, end_ms=1000, content="강사 복구 대본")]
+        ),
+        db,
+        SimpleNamespace(id=6),
+        background_tasks,
+    )
+    return background_tasks
+
+
+def _add_second_video(db, course, section):
+    video = Video(
+        course_id=course.id,
+        section_id=section.id,
+        video_type="LESSON",
+        title="두 번째 영상",
+        duration_seconds=60,
+        sort_order=2,
+        video_storage_key="test/second.mp4",
+        is_active=True,
+    )
+    db.add(video)
+    db.flush()
+    return video
+
+
+def test_stt_failure_and_manual_script_recover_section_quiz(db, processing_case, monkeypatch):
+    _, section, video = processing_case
+
+    def reject(request):
+        raise ProcessingError("STT_FAILED")
+
+    monkeypatch.setattr(jobs.runtime, "get_stt_service", lambda: SimpleNamespace(transcribe=reject))
+    video_job = jobs.queue_video(db, video)
+    db.commit()
+    jobs.run_job(video_job.id)
+    quiz = jobs.active_unit_quiz(db, section.id)
+    failed = db.scalar(select(ProcessingJob).where(ProcessingJob.kind == "QUIZ"))
+    assert video.stt_status == quiz.ai_status == failed.status == "FAILED"
+    assert failed.error_code == "SECTION_TRANSCRIPT_FAILED"
+    assert failed.finished_at is not None
+
+    background_tasks = _save_manual_script(db, video)
+    assert len(background_tasks.tasks) == 1
+    assert quiz.ai_status == "PENDING"
+    task = background_tasks.tasks[0]
+    assert task.func is jobs.run_job
+    task.func(*task.args, **task.kwargs)
+    db.expire_all()
+    assert quiz.ai_status == "COMPLETED"
+    assert len(quiz.questions) == 3
+    assert quiz.reviewed_at is None
+    assert video.scripts[0].content == "강사 복구 대본"
+    assert video.transcript_reviewed_at is not None
+    assert failed.status == video_job.status == "FAILED"  # 실패 이력은 보존한다.
+    assert failed.error_code == "SECTION_TRANSCRIPT_FAILED"
+
+
+def test_manual_script_wakes_pending_quiz_without_duplicate_job(db, processing_case):
+    _, section, video = processing_case
+    video_job = jobs.queue_video(db, video)
+    db.commit()
+    quiz_job = db.scalar(select(ProcessingJob).where(ProcessingJob.kind == "QUIZ"))
+    background_tasks = _save_manual_script(db, video)
+    assert len(background_tasks.tasks) == 1
+    assert background_tasks.tasks[0].args == (quiz_job.id,)
+    assert video_job.status == "SUPERSEDED"
+    jobs.run_job(quiz_job.id)
+    assert jobs.active_unit_quiz(db, section.id).ai_status == "COMPLETED"
+    assert len(db.scalars(select(ProcessingJob).where(ProcessingJob.kind == "QUIZ")).all()) == 1
+    assert _save_manual_script(db, video).tasks == []  # 완료했지만 미검수인 퀴즈도 보존한다.
+
+
+def test_manual_recovery_waits_until_all_failed_scripts_are_fixed(db, processing_case):
+    course, section, video = processing_case
+    second = _add_second_video(db, course, section)
+    first_job = jobs.queue_video(db, video)
+    second_job = jobs.queue_video(db, second)
+    db.commit()
+    jobs._fail(first_job.id, "STT_FAILED")
+    jobs._fail(second_job.id, "STT_FAILED")
+    assert _save_manual_script(db, video).tasks == []
+    assert jobs.active_unit_quiz(db, section.id).ai_status == "FAILED"
+    background_tasks = _save_manual_script(db, second)
+    assert len(background_tasks.tasks) == 1
+    task = background_tasks.tasks[0]
+    task.func(*task.args, **task.kwargs)
+    assert jobs.active_unit_quiz(db, section.id).ai_status == "COMPLETED"
+
+
+def test_last_automatic_script_resumes_quiz_after_manual_recovery(db, processing_case):
+    course, section, video = processing_case
+    second = _add_second_video(db, course, section)
+    first_job = jobs.queue_video(db, video)
+    second_job = jobs.queue_video(db, second)
+    db.commit()
+    jobs._fail(first_job.id, "STT_FAILED")
+    assert _save_manual_script(db, video).tasks == []
+    jobs.run_job(second_job.id)
+    assert jobs.active_unit_quiz(db, section.id).ai_status == "COMPLETED"
+    assert video.transcript_reviewed_at is not None
+
+
+def test_quiz_request_with_failed_script_does_not_wait_forever(db, processing_case):
+    course, section, video = processing_case
+    video.stt_status = "FAILED"
+    quiz_job = jobs.queue_section(db, course.id, section.id)
+    db.commit()
+    jobs.run_job(quiz_job.id)
+    assert quiz_job.status == "FAILED"
+    assert quiz_job.error_code == "SECTION_TRANSCRIPT_FAILED"
+    assert jobs.active_unit_quiz(db, section.id).ai_status == "FAILED"
+
+
+def test_ot_failure_does_not_fail_lesson_quiz(db, processing_case):
+    course, section, video = processing_case
+    jobs.queue_video(db, video)
+    ot = Video(
+        course_id=course.id,
+        video_type="OT",
+        title="OT",
+        duration_seconds=60,
+        sort_order=0,
+        video_storage_key="test/ot.mp4",
+        is_active=True,
+    )
+    db.add(ot)
+    ot_job = jobs.queue_video(db, ot)
+    db.commit()
+    jobs._fail(ot_job.id, "STT_FAILED")
+    assert ot.stt_status == "FAILED"
+    assert jobs.active_unit_quiz(db, section.id).ai_status == "PENDING"
+    assert _save_manual_script(db, ot).tasks == []
 
 
 def test_registered_course_context_reaches_all_processing_steps(db, processing_case, monkeypatch):
