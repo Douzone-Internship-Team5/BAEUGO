@@ -1,3 +1,5 @@
+import json
+import math
 import os
 import shutil
 import subprocess
@@ -44,7 +46,7 @@ def validate_video_file(file: UploadFile) -> None:
 def extract_video_duration(file_path: Path) -> int | None:
     """FFprobe를 통해 실제 동영상 재생 길이(초)를 추출한다.
 
-    추출 실패(더미 파일, 미디어 파싱 오류, 타임아웃 등) 시 None을 반환한다.
+    잘못된 영상은 None, 서버 도구/시간 제한 문제는 AppError로 구분한다.
     """
     try:
         cmd = [
@@ -52,19 +54,40 @@ def extract_video_duration(file_path: Path) -> int | None:
             "-v",
             "error",
             "-show_entries",
-            "format=duration",
+            "format=duration:stream=codec_type",
             "-of",
-            "default=noprint_wrappers=1:nokey=1",
+            "json",
             str(file_path),
         ]
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=5)
-        if result.returncode == 0 and result.stdout.strip():
-            duration = float(result.stdout.strip())
-            if duration > 0:
-                return max(1, round(duration))
-    except Exception:
-        pass
+        if result.returncode != 0:
+            return None
+        metadata = json.loads(result.stdout)
+        if not any(stream.get("codec_type") == "video" for stream in metadata.get("streams", [])):
+            return None
+        duration = float(metadata.get("format", {}).get("duration", "nan"))
+        if math.isfinite(duration) and duration > 0:
+            return max(1, math.ceil(duration))
+    except (ValueError, TypeError, AttributeError):
+        return None
+    except (OSError, subprocess.TimeoutExpired) as error:
+        raise AppError(
+            503, "MEDIA_PROCESSING_UNAVAILABLE", "영상 길이 분석을 실행할 수 없습니다."
+        ) from error
     return None
+
+
+def save_video_file(file: UploadFile, course_id: int) -> tuple[str, int]:
+    storage_key = save_upload_file(file, f"courses/{course_id}/videos", "video")
+    file_path = get_media_dir() / storage_key
+    try:
+        duration = extract_video_duration(file_path)
+        if duration is None:
+            raise AppError(400, "INVALID_FILE", "영상 재생 시간을 확인할 수 없는 파일입니다.")
+    except AppError:
+        file_path.unlink(missing_ok=True)
+        raise
+    return storage_key, duration
 
 
 def extract_video_thumbnail(video_path: Path, output_path: Path) -> bool:

@@ -9,7 +9,87 @@ from app.models.quiz import Quiz
 from app.models.video import Video
 
 
+def test_b6_duplicate_lesson_order_is_rejected(client: TestClient, db: Session, monkeypatch):
+    course = Course(
+        instructor_id=6,
+        category_id=1,
+        topic_id=11,
+        title="영상 순서 검증",
+        description="설명",
+        difficulty="BEGINNER",
+        price_krw=0,
+        status="DRAFT",
+    )
+    db.add(course)
+    db.flush()
+    section = Section(course_id=course.id, title="섹션", sort_order=1)
+    other_section = Section(course_id=course.id, title="다른 섹션", sort_order=2)
+    db.add_all([section, other_section])
+    db.flush()
+
+    def add_video(section_id, order, *, is_active=True):
+        video = Video(
+            course_id=course.id,
+            section_id=section_id,
+            video_type="LESSON",
+            title="기존 영상",
+            duration_seconds=60,
+            sort_order=order,
+            video_storage_key=f"test/{section_id}_{order}.mp4",
+            is_active=is_active,
+        )
+        db.add(video)
+        return video
+
+    first = add_video(section.id, 1)
+    target = add_video(section.id, 2)
+    add_video(section.id, 3, is_active=False)
+    add_video(other_section.id, 3)
+    db.commit()
+
+    def unexpected_save(*args, **kwargs):
+        raise AssertionError("중복 순서 요청은 파일 저장 전에 거부해야 한다.")
+
+    monkeypatch.setattr("app.routers.instructor.videos.save_video_file", unexpected_save)
+    path = f"/api/v1/instructor/videos/{target.id}"
+    responses = [
+        client.patch(path, json={"sortOrder": 1, "title": "변경 시도"}),
+        client.patch(
+            path,
+            data={"sortOrder": "1", "title": "교체 시도"},
+            files={"file": ("new.mp4", b"dummy", "video/mp4")},
+        ),
+    ]
+    for response in responses:
+        assert response.status_code == 400
+        assert response.json()["error"]["code"] == "VALIDATION_ERROR"
+    db.refresh(target)
+    db.refresh(first)
+    assert target.is_active
+    assert target.title == "기존 영상"
+    assert target.video_storage_key == f"test/{section.id}_2.mp4"
+    assert target.sort_order == 2
+    assert first.sort_order == 1
+
+    # 본인의 기존 순서는 허용하고, 비활성 영상·다른 섹션은 중복 대상에서 제외한다.
+    assert client.patch(path, json={"sortOrder": 2}).status_code == 200
+    moved = client.patch(path, json={"sortOrder": 3})
+    assert moved.status_code == 200
+    assert moved.json()["data"]["sortOrder"] == 3
+    db.refresh(first)
+    assert first.sort_order == 1
+
+
 def test_b6_videos_crud_and_replacement(client: TestClient, db_session: Session):
+    # Swagger가 실제 서버에서 받는 camelCase 폼 이름을 안내해야 한다.
+    schema = client.get("/openapi.json").json()
+    operation = schema["paths"]["/api/v1/instructor/videos"]["post"]
+    form_schema = operation["requestBody"]["content"]["multipart/form-data"]["schema"]
+    body = schema["components"]["schemas"][form_schema["$ref"].split("/")[-1]]
+    assert {"courseId", "videoType", "sectionId"} <= body["properties"].keys()
+    assert {"course_id", "video_type", "section_id"}.isdisjoint(body["properties"])
+    assert {"courseId", "videoType"} <= set(body["required"])
+
     course = Course(
         instructor_id=6,
         category_id=1,
@@ -425,7 +505,7 @@ def test_b6_cross_section_unit_quiz_auto_create_and_json_patch(
     assert res_bad_ext.json()["error"]["code"] == "INVALID_FILE"
 
 
-def test_video_duration_extraction_and_fallback(client: TestClient, db_session: Session):
+def test_video_duration_extraction_and_rejection(client: TestClient, db_session: Session):
     from unittest.mock import patch
 
     course = Course(
@@ -442,7 +522,7 @@ def test_video_duration_extraction_and_fallback(client: TestClient, db_session: 
     db_session.commit()
 
     # 1. 실제 영상 추출 성공 시 (extract_video_duration이 125초 반환)
-    with patch("app.routers.instructor.videos.extract_video_duration", return_value=125):
+    with patch("app.services.storage.extract_video_duration", return_value=125):
         res_real = client.post(
             "/api/v1/instructor/videos",
             data={"courseId": course.id, "videoType": "OT", "title": "실제 길이 OT"},
@@ -450,20 +530,22 @@ def test_video_duration_extraction_and_fallback(client: TestClient, db_session: 
         )
         assert res_real.status_code == 201
         assert res_real.json()["data"]["durationSeconds"] == 125
+        active_vid_id = res_real.json()["data"]["videoId"]
 
-    # 2. 영상 추출 실패 시 (None 반환) 기본 360초 폴백
-    with patch("app.routers.instructor.videos.extract_video_duration", return_value=None):
+    # 2. 분석 불가 파일을 거부하고 기존 활성 OT를 보존한다.
+    with patch("app.services.storage.extract_video_duration", return_value=None):
         res_fallback = client.post(
             "/api/v1/instructor/videos",
             data={"courseId": course.id, "videoType": "OT", "title": "폴백 OT"},
             files={"file": ("fallback_sample.mp4", io.BytesIO(b"dummy mp4 bytes"), "video/mp4")},
         )
-        assert res_fallback.status_code == 201
-        assert res_fallback.json()["data"]["durationSeconds"] == 360
-        active_vid_id = res_fallback.json()["data"]["videoId"]
+        assert res_fallback.status_code == 400
+        assert res_fallback.json()["error"]["code"] == "INVALID_FILE"
+        db_session.expire_all()
+        assert db_session.get(Video, active_vid_id).is_active
 
     # 3. PATCH 영상 파일 교체 시 실제 재생 시간 갱신 (75초)
-    with patch("app.routers.instructor.videos.extract_video_duration", return_value=75):
+    with patch("app.services.storage.extract_video_duration", return_value=75):
         res_patch_real = client.patch(
             f"/api/v1/instructor/videos/{active_vid_id}",
             files={"file": ("patch_sample.mp4", io.BytesIO(b"dummy mp4 bytes"), "video/mp4")},
@@ -472,14 +554,16 @@ def test_video_duration_extraction_and_fallback(client: TestClient, db_session: 
         assert res_patch_real.json()["data"]["durationSeconds"] == 75
         new_vid_id = res_patch_real.json()["data"]["videoId"]
 
-    # 4. PATCH 영상 파일 교체 시 추출 실패(None)인 경우 이전 재생 시간(75초) 폴백 유지
-    with patch("app.routers.instructor.videos.extract_video_duration", return_value=None):
+    # 4. 교체 파일도 분석 실패 시 거부하며 기존 영상/길이는 그대로 유지한다.
+    with patch("app.services.storage.extract_video_duration", return_value=None):
         res_patch_fallback = client.patch(
             f"/api/v1/instructor/videos/{new_vid_id}",
             files={"file": ("patch_fallback.mp4", io.BytesIO(b"dummy mp4 bytes"), "video/mp4")},
         )
-        assert res_patch_fallback.status_code == 200
-        assert res_patch_fallback.json()["data"]["durationSeconds"] == 75
+        assert res_patch_fallback.status_code == 400
+        db_session.expire_all()
+        assert db_session.get(Video, new_vid_id).is_active
+        assert db_session.get(Video, new_vid_id).duration_seconds == 75
 
 
 def test_extract_video_duration_unit(tmp_path):

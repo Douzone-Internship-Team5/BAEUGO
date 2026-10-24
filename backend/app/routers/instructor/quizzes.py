@@ -3,8 +3,8 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from typing import Annotated
 
-from fastapi import APIRouter, Query
-from sqlalchemy import func, select
+from fastapi import APIRouter, BackgroundTasks, Query
+from sqlalchemy import select
 
 from app.core.auth import (
     InstructorUser,
@@ -13,7 +13,6 @@ from app.core.auth import (
 )
 from app.core.database import DbSession
 from app.core.errors import AppError
-from app.models.learning import AttemptQuestion, QuestionRecord
 from app.models.quiz import Question, QuestionChoice, Quiz
 from app.schemas.common import DataResponse
 from app.schemas.quiz import (
@@ -22,6 +21,7 @@ from app.schemas.quiz import (
     QuizRegenerateResponseData,
     QuizUpdateRequest,
 )
+from app.services.processing import jobs
 
 router = APIRouter(tags=["instructor-quizzes"])
 
@@ -104,7 +104,7 @@ def update_quiz(
     current_user: InstructorUser,
     section_id: Annotated[int | None, Query(alias="sectionId")] = None,
 ):
-    course = verify_course_ownership(course_id, current_user.id, db)
+    course = verify_course_ownership(course_id, current_user.id, db, for_update=True)
     if course.status not in ("DRAFT", "EDITING"):
         raise AppError(
             409,
@@ -180,29 +180,7 @@ def update_quiz(
             db.add(quiz)
             db.flush()
 
-    # (치명적 제약조건 방어)
-    # 기존 문항 중 수강생 제출 이력(attempt_questions) 또는
-    # 오답노트 이력(question_records)이 있는 문항은
-    # is_active=False 및 order_no = -id 로 음수화하여 보존!
-    existing_questions = list(quiz.questions)
-    for old_q in existing_questions:
-        if not old_q.is_active:
-            if old_q.order_no > 0:
-                old_q.order_no = -int(old_q.id)
-            continue
-        has_attempts = db.scalar(
-            select(func.count(AttemptQuestion.id)).where(AttemptQuestion.question_id == old_q.id)
-        )
-        has_records = db.scalar(
-            select(func.count(QuestionRecord.id)).where(QuestionRecord.question_id == old_q.id)
-        )
-        if (has_attempts and has_attempts > 0) or (has_records and has_records > 0):
-            old_q.is_active = False
-            old_q.order_no = -int(old_q.id)
-        else:
-            # 시도 이력이 없는 기존 문항은 삭제
-            db.delete(old_q)
-    db.flush()
+    jobs.retire_quiz_questions(db, quiz)
 
     # 새 문항 삽입
     new_question_dtos: list[QuestionItem] = []
@@ -242,6 +220,8 @@ def update_quiz(
         )
 
     # 검수 시각 및 검수자 기록
+    if section_id is not None:
+        jobs.cancel_jobs(db, section_id=section_id)
     now = datetime.now(UTC)
     quiz.reviewed_by = current_user.id
     quiz.reviewed_at = now
@@ -272,11 +252,12 @@ def regenerate_unit_quiz(
     course_id: int,
     db: DbSession,
     current_user: InstructorUser,
+    background_tasks: BackgroundTasks,
     section_id: Annotated[
         int, Query(alias="sectionId", description="재생성할 단위 퀴즈의 섹션 ID")
     ],
 ):
-    course = verify_course_ownership(course_id, current_user.id, db)
+    course = verify_course_ownership(course_id, current_user.id, db, for_update=True)
     if course.status not in ("DRAFT", "EDITING"):
         raise AppError(
             409,
@@ -285,30 +266,11 @@ def regenerate_unit_quiz(
         )
 
     verify_section_ownership(section_id, current_user.id, db, course_id=course.id)
-    quiz = db.scalar(
-        select(Quiz).where(
-            Quiz.course_id == course.id,
-            Quiz.section_id == section_id,
-            Quiz.quiz_type == "UNIT",
-            Quiz.is_active.is_(True),
-        )
-    )
-    if not quiz:
-        quiz = Quiz(
-            course_id=course.id,
-            section_id=section_id,
-            quiz_type="UNIT",
-            ai_status="PENDING",
-            reviewed_at=None,
-            is_active=True,
-        )
-        db.add(quiz)
-    else:
-        quiz.ai_status = "PENDING"
-        quiz.reviewed_at = None
-
+    job = jobs.queue_section(db, course.id, section_id)
+    quiz = jobs.active_unit_quiz(db, section_id)
     db.commit()
     db.refresh(quiz)
+    background_tasks.add_task(jobs.run_job, job.id)
 
     return DataResponse(
         data=QuizRegenerateResponseData(

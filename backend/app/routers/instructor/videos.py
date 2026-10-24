@@ -4,7 +4,7 @@ from datetime import UTC, datetime
 from typing import Annotated
 from uuid import uuid4
 
-from fastapi import APIRouter, File, Form, Request, UploadFile
+from fastapi import APIRouter, BackgroundTasks, File, Form, Request, UploadFile
 from sqlalchemy import delete, func, select
 
 from app.core.auth import (
@@ -15,7 +15,6 @@ from app.core.auth import (
 )
 from app.core.database import DbSession
 from app.core.errors import AppError
-from app.models.quiz import Quiz
 from app.models.video import Video, VideoScript
 from app.schemas.common import DataResponse
 from app.schemas.script import (
@@ -28,11 +27,14 @@ from app.schemas.video import (
     VideoDeleteResponseData,
     VideoResponseData,
 )
+from app.services.processing import jobs
+from app.services.processing.engine.errors import ProcessingError
+from app.services.processing.inputs import validated_transcript
 from app.services.storage import (
-    extract_video_duration,
     extract_video_thumbnail,
     get_media_dir,
     save_upload_file,
+    save_video_file,
     validate_thumbnail_file,
     validate_video_file,
 )
@@ -47,14 +49,15 @@ router = APIRouter(tags=["instructor-videos"])
 def upload_video(
     db: DbSession,
     current_user: InstructorUser,
-    course_id: Annotated[int, Form(alias="courseId")],
-    video_type: Annotated[str, Form(alias="videoType")],
+    background_tasks: BackgroundTasks,
+    course_id: Annotated[int, Form(alias="courseId", validation_alias="courseId")],
+    video_type: Annotated[str, Form(alias="videoType", validation_alias="videoType")],
     title: Annotated[str, Form(...)],
     file: Annotated[UploadFile, File(...)],
-    section_id: Annotated[int | None, Form(alias="sectionId")] = None,
+    section_id: Annotated[int | None, Form(alias="sectionId", validation_alias="sectionId")] = None,
     thumbnail: Annotated[UploadFile | None, File()] = None,
 ):
-    course = verify_course_ownership(course_id, current_user.id, db)
+    course = verify_course_ownership(course_id, current_user.id, db, for_update=True)
     if course.status not in ("DRAFT", "EDITING"):
         raise AppError(
             409, "CONFLICT", "DRAFT 또는 EDITING 상태인 강좌에서만 영상을 편집할 수 있습니다."
@@ -76,6 +79,9 @@ def upload_video(
     if section_id is not None:
         verify_section_ownership(section_id, current_user.id, db, course_id=course.id)
 
+    video_key, duration_seconds = save_video_file(file, course.id)
+    media_dir = get_media_dir()
+
     # OT는 강좌당 활성 1개만 유지: 새 OT 등록 시 기존 OT is_active = False
     if video_type == "OT":
         section_id = None
@@ -88,6 +94,7 @@ def upload_video(
         ).all()
         for v in existing_ots:
             v.is_active = False
+            jobs.cancel_jobs(db, video_id=v.id)
         db.flush()
         sort_order = 0
     else:
@@ -97,12 +104,6 @@ def upload_video(
             )
         )
         sort_order = (max_order or 0) + 1
-
-    # 파일 저장 및 실제 영상 재생 시간 추출 (실패 시 기본 360초 폴백)
-    video_key = save_upload_file(file, f"courses/{course.id}/videos", "video")
-    media_dir = get_media_dir()
-    extracted_duration = extract_video_duration(media_dir / video_key)
-    duration_seconds = extracted_duration if extracted_duration is not None else 360
 
     thumb_key = None
     if thumbnail is not None:
@@ -130,32 +131,10 @@ def upload_video(
     )
     db.add(video)
 
-    # 섹션 단위 퀴즈 자동 생성 및 재생성 연동
-    if video_type == "LESSON" and section_id is not None:
-        unit_quiz = db.scalar(
-            select(Quiz).where(
-                Quiz.section_id == section_id,
-                Quiz.quiz_type == "UNIT",
-                Quiz.is_active.is_(True),
-            )
-        )
-        if unit_quiz:
-            unit_quiz.ai_status = "PENDING"
-            unit_quiz.reviewed_at = None
-        else:
-            db.add(
-                Quiz(
-                    course_id=course.id,
-                    section_id=section_id,
-                    quiz_type="UNIT",
-                    ai_status="PENDING",
-                    reviewed_at=None,
-                    is_active=True,
-                )
-            )
-
+    job = jobs.queue_video(db, video)
     db.commit()
     db.refresh(video)
+    background_tasks.add_task(jobs.run_job, job.id)
 
     return DataResponse(
         data=VideoResponseData(
@@ -179,8 +158,9 @@ async def update_or_replace_video(
     request: Request,
     db: DbSession,
     current_user: InstructorUser,
+    background_tasks: BackgroundTasks,
 ):
-    video = verify_video_ownership(video_id, current_user.id, db)
+    video = verify_video_ownership(video_id, current_user.id, db, for_update=True)
     course = video.course
     if course.status not in ("DRAFT", "EDITING"):
         raise AppError(
@@ -248,6 +228,27 @@ async def update_or_replace_video(
         if (video.video_type == "LESSON" and sort_order < 1) or sort_order < 0:
             raise AppError(400, "VALIDATION_ERROR", "정렬 순서(sortOrder) 값이 올바르지 않습니다.")
 
+    if video.video_type == "LESSON" and (sort_order is not None or file is not None):
+        target_order = sort_order if sort_order is not None else video.sort_order
+        duplicate_id = db.scalar(
+            select(Video.id)
+            .where(
+                Video.course_id == video.course_id,
+                Video.section_id == video.section_id,
+                Video.video_type == "LESSON",
+                Video.is_active.is_(True),
+                Video.id != video.id,
+                Video.sort_order == target_order,
+            )
+            .limit(1)
+        )
+        if duplicate_id is not None:
+            raise AppError(
+                400,
+                "VALIDATION_ERROR",
+                "같은 섹션의 활성 학습 영상과 정렬 순서(sortOrder)가 중복됩니다.",
+            )
+
     if file is not None:
         validate_video_file(file)
     if thumbnail is not None:
@@ -255,16 +256,10 @@ async def update_or_replace_video(
 
     # 파일이 제공된 경우: 새 videoId 행 생성 규칙 적용!
     if file is not None:
-        video.is_active = False
-
-        new_video_key = save_upload_file(file, f"courses/{course.id}/videos", "video")
+        new_video_key, new_duration = save_video_file(file, course.id)
         media_dir = get_media_dir()
-        extracted_duration = extract_video_duration(media_dir / new_video_key)
-        new_duration = (
-            extracted_duration
-            if extracted_duration is not None
-            else (video.duration_seconds or 360)
-        )
+        video.is_active = False
+        jobs.cancel_jobs(db, video_id=video.id)
 
         new_thumb_key = video.thumbnail_storage_key
         if thumbnail is not None:
@@ -291,32 +286,10 @@ async def update_or_replace_video(
         )
         db.add(new_video)
 
-        # 단위 퀴즈 자동 생성 및 재생성 연동
-        if video.video_type == "LESSON" and video.section_id is not None:
-            unit_quiz = db.scalar(
-                select(Quiz).where(
-                    Quiz.section_id == video.section_id,
-                    Quiz.quiz_type == "UNIT",
-                    Quiz.is_active.is_(True),
-                )
-            )
-            if unit_quiz:
-                unit_quiz.ai_status = "PENDING"
-                unit_quiz.reviewed_at = None
-            else:
-                db.add(
-                    Quiz(
-                        course_id=course.id,
-                        section_id=video.section_id,
-                        quiz_type="UNIT",
-                        ai_status="PENDING",
-                        reviewed_at=None,
-                        is_active=True,
-                    )
-                )
-
+        job = jobs.queue_video(db, new_video)
         db.commit()
         db.refresh(new_video)
+        background_tasks.add_task(jobs.run_job, job.id)
 
         return DataResponse(
             data=VideoResponseData(
@@ -368,7 +341,7 @@ def delete_video(
     db: DbSession,
     current_user: InstructorUser,
 ):
-    video = verify_video_ownership(video_id, current_user.id, db)
+    video = verify_video_ownership(video_id, current_user.id, db, for_update=True)
     course = video.course
     if course.status not in ("DRAFT", "EDITING"):
         raise AppError(
@@ -376,6 +349,7 @@ def delete_video(
         )
 
     video.is_active = False
+    jobs.cancel_jobs(db, video_id=video.id)
     db.commit()
 
     return DataResponse(
@@ -423,8 +397,9 @@ def update_video_script(
     req: ScriptUpdateRequest,
     db: DbSession,
     current_user: InstructorUser,
+    background_tasks: BackgroundTasks,
 ):
-    video = verify_video_ownership(video_id, current_user.id, db)
+    video = verify_video_ownership(video_id, current_user.id, db, for_update=True)
     course = video.course
     if course.status not in ("DRAFT", "EDITING"):
         raise AppError(
@@ -433,27 +408,24 @@ def update_video_script(
             "DRAFT 또는 EDITING 상태인 강좌에서만 대본을 수정하거나 재생성할 수 있습니다.",
         )
 
-    seen_seqs: set[int] = set()
-    for seg in req.segments:
-        if seg.seq < 1:
-            raise AppError(400, "VALIDATION_ERROR", "자막 순번(seq)은 1 이상이어야 합니다.")
-        if seg.seq in seen_seqs:
-            raise AppError(400, "VALIDATION_ERROR", "중복된 자막 순번(seq)이 존재합니다.")
-        seen_seqs.add(seg.seq)
-        if seg.start_ms < 0:
-            raise AppError(
-                400, "VALIDATION_ERROR", "자막 시작 시점(startMs)은 0 이상이어야 합니다."
-            )
-        if seg.end_ms <= seg.start_ms:
-            raise AppError(
-                400,
-                "VALIDATION_ERROR",
-                "자막 종료 시점(endMs)은 시작 시점(startMs)보다 커야 합니다.",
-            )
-        if not seg.content or not seg.content.strip():
-            raise AppError(400, "VALIDATION_ERROR", "자막 내용(content)은 비어 있을 수 없습니다.")
-
     sorted_segments = sorted(req.segments, key=lambda x: x.seq)
+    try:
+        validated_transcript(video, sorted_segments)
+    except ProcessingError as error:
+        messages = {
+            "EMPTY_TRANSCRIPT": "대본은 한 구간 이상 입력해야 합니다.",
+            "INVALID_SEQUENCE": "자막 순번(seq)은 1부터 중복 없이 연속되어야 합니다.",
+            "INVALID_TIMESTAMPS": (
+                "자막은 시작 시간순이어야 하며 종료 시간은 영상 길이 + 1초를 넘을 수 없습니다."
+            ),
+            "INVALID_DURATION": "영상 길이가 유효하지 않습니다. 영상을 교체해 주세요.",
+        }
+        message = messages.get(
+            error.code,
+            "자막 순번·시작/종료 시간과 비어 있지 않은 내용을 확인해 주세요.",
+        )
+        raise AppError(400, "VALIDATION_ERROR", message) from error
+    jobs.cancel_jobs(db, video_id=video.id)
 
     # 기존 자막 삭제 후 교체
     db.execute(delete(VideoScript).where(VideoScript.video_id == video.id))
@@ -472,9 +444,12 @@ def update_video_script(
     now = datetime.now(UTC)
     video.stt_status = "COMPLETED"
     video.transcript_reviewed_at = now
+    quiz_job = jobs.resume_section_quiz(db, video)
 
     db.commit()
     db.refresh(video)
+    if quiz_job is not None:
+        background_tasks.add_task(jobs.run_job, quiz_job.id)
 
     return DataResponse(
         data=ScriptResponseData(
@@ -494,8 +469,9 @@ def regenerate_video_script(
     video_id: int,
     db: DbSession,
     current_user: InstructorUser,
+    background_tasks: BackgroundTasks,
 ):
-    video = verify_video_ownership(video_id, current_user.id, db)
+    video = verify_video_ownership(video_id, current_user.id, db, for_update=True)
     course = video.course
     if course.status not in ("DRAFT", "EDITING"):
         raise AppError(
@@ -504,9 +480,9 @@ def regenerate_video_script(
             "DRAFT 또는 EDITING 상태인 강좌에서만 대본을 수정하거나 재생성할 수 있습니다.",
         )
 
-    video.stt_status = "PENDING"
-    video.transcript_reviewed_at = None
+    job = jobs.queue_video(db, video)
     db.commit()
+    background_tasks.add_task(jobs.run_job, job.id)
 
     return DataResponse(
         data=ScriptRegenerateResponseData(
