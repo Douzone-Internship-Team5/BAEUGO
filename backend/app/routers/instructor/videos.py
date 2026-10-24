@@ -397,6 +397,7 @@ def update_video_script(
     req: ScriptUpdateRequest,
     db: DbSession,
     current_user: InstructorUser,
+    background_tasks: BackgroundTasks,
 ):
     video = verify_video_ownership(video_id, current_user.id, db, for_update=True)
     course = video.course
@@ -443,9 +444,12 @@ def update_video_script(
     now = datetime.now(UTC)
     video.stt_status = "COMPLETED"
     video.transcript_reviewed_at = now
+    quiz_job = jobs.resume_section_quiz(db, video)
 
     db.commit()
     db.refresh(video)
+    if quiz_job is not None:
+        background_tasks.add_task(jobs.run_job, quiz_job.id)
 
     return DataResponse(
         data=ScriptResponseData(
