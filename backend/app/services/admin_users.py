@@ -2,7 +2,7 @@ from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
 from app.core.errors import AppError
-from app.models import AccountType, Role, User, UserRole
+from app.models import AccountType, Course, Enrollment, Role, User, UserRole
 from app.schemas.admin import (
     AdminUserDetail,
     AdminUserItem,
@@ -86,22 +86,46 @@ def get_member_detail(db: Session, user_id: int) -> AdminUserDetail:
         is_active=user.is_active,
         onboarding=get_onboarding(db, user, user.active_mode),
         learning_summary=build_learning_summary(db, user),
-        instructor_summary=build_instructor_summary(),
+        instructor_summary=build_instructor_summary(db, user),
     )
 
 
 def build_learning_summary(db: Session, user: User) -> LearningSummary:
+    status_counts = dict(
+        db.execute(
+            select(Enrollment.status, func.count())
+            .where(Enrollment.learner_id == user.id)
+            .group_by(Enrollment.status)
+        ).all()
+    )
+    last_studied_at = db.scalar(
+        select(func.max(Enrollment.last_studied_at)).where(Enrollment.learner_id == user.id)
+    )
     return LearningSummary(
-        # TODO: enrollments(원호·C 영역)가 main에 들어오면
-        #  status별 개수와 가장 최근 last_studied_at으로 채운다.
-        in_progress_count=0,
-        completed_count=0,
-        last_studied_at=None,
+        in_progress_count=status_counts.get("IN_PROGRESS", 0),
+        completed_count=status_counts.get("COMPLETED", 0),
+        last_studied_at=last_studied_at,
         attendance_streak=get_current_streak(db, user.id),
     )
 
 
-def build_instructor_summary() -> InstructorSummary:
-    # TODO: courses·enrollments(원호)가 main에 들어오면
-    #  본인 강좌의 상태별 개수와 총 수강생 수로 채운다.
-    return InstructorSummary(course_count=CourseStatusCount(), total_enrollments=0)
+def build_instructor_summary(db: Session, user: User) -> InstructorSummary:
+    status_counts = dict(
+        db.execute(
+            select(Course.status, func.count())
+            .where(Course.instructor_id == user.id)
+            .group_by(Course.status)
+        ).all()
+    )
+    total_enrollments = db.scalar(
+        select(func.count())
+        .select_from(Enrollment)
+        .join(Course, Course.id == Enrollment.course_id)
+        .where(Course.instructor_id == user.id)
+    )
+    return InstructorSummary(
+        course_count=CourseStatusCount(
+            **{status: status_counts.get(status, 0) for status in CourseStatusCount.model_fields}
+        ),
+        total_enrollments=total_enrollments,
+    )

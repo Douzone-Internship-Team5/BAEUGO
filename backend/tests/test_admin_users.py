@@ -1,10 +1,11 @@
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
 
 import pytest
 
 from app.core.timezone import today_in_seoul
 from app.models import AttendanceDay, Role, UserRole
 from tests.conftest import auth_header
+from tests.factories import enroll, make_course
 
 USERS_URL = "/api/v1/admin/users"
 MEMBER_EMAILS = [
@@ -287,3 +288,39 @@ def test_login_is_required(client, path):
 
     assert response.status_code == 401
     assert response.json()["error"]["code"] == "UNAUTHORIZED"
+
+
+# ---------- OP-5 학습·강사 요약 ----------
+
+
+def test_learning_summary_counts_enrollments(client, db, operator_headers, get_user):
+    learner = get_user("learner2@baeugo.test")
+    instructor = get_user("instructor2@baeugo.test")
+    latest = datetime(2026, 10, 23, 8, 30, tzinfo=UTC)
+    first, second, third = (make_course(db, instructor, title=f"강좌 {n}") for n in range(3))
+    enroll(db, learner, first, last_studied_at=latest)
+    enroll(db, learner, second)
+    enroll(db, learner, third, status="COMPLETED", last_studied_at=latest - timedelta(days=2))
+
+    summary = get_detail(client, operator_headers, learner.id).json()["data"]["learningSummary"]
+
+    assert datetime.fromisoformat(summary.pop("lastStudiedAt")) == latest
+    assert summary == {"inProgressCount": 2, "completedCount": 1, "attendanceStreak": 0}
+
+
+def test_instructor_summary_counts_courses_and_enrollments(client, db, operator_headers, get_user):
+    instructor = get_user("instructor1@baeugo.test")
+    published = [make_course(db, instructor, title=f"공개 {n}") for n in range(2)]
+    make_course(db, instructor, title="작성 중", status="DRAFT")
+    make_course(db, instructor, title="운영자 비공개", status="OPERATOR_HIDDEN")
+    make_course(db, get_user("instructor2@baeugo.test"), title="다른 강사 강좌")
+    enroll(db, get_user("learner1@baeugo.test"), published[0])
+    enroll(db, get_user("learner2@baeugo.test"), published[0])
+    enroll(db, get_user("learner2@baeugo.test"), published[1])
+
+    data = get_detail(client, operator_headers, instructor.id).json()["data"]
+
+    assert data["instructorSummary"] == {
+        "courseCount": {"DRAFT": 1, "PUBLISHED": 2, "EDITING": 0, "OPERATOR_HIDDEN": 1},
+        "totalEnrollments": 3,
+    }
