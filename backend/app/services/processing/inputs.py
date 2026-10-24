@@ -77,6 +77,8 @@ def section_input(db: Session, section_id: int) -> SectionInput | None:
     ).all()
     if not videos:
         raise ProcessingError("SECTION_EMPTY")
+    if any(video.stt_status == "FAILED" for video in videos):
+        raise ProcessingError("SECTION_TRANSCRIPT_FAILED")
     if any(video.stt_status != "COMPLETED" for video in videos):
         return None
     inputs = []

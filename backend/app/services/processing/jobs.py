@@ -27,6 +27,7 @@ from app.services.processing.inputs import section_input, video_snapshot
 
 logger = logging.getLogger(__name__)
 OPEN_STATUSES = ("PENDING", "PROCESSING")
+TRANSCRIPT_FAILURE = "SECTION_TRANSCRIPT_FAILED"
 
 
 def _json_value(value: dict) -> dict:
@@ -85,6 +86,73 @@ def queue_section(db: Session, course_id: int, section_id: int) -> ProcessingJob
     return job
 
 
+def _fail_waiting_quiz(db: Session, section_id: int) -> None:
+    quiz = active_unit_quiz(db, section_id)
+    if quiz is None or quiz.ai_status != "PENDING" or quiz.reviewed_at is not None:
+        return
+    failed_video = db.scalar(
+        select(Video.id)
+        .where(
+            Video.section_id == section_id,
+            Video.video_type == "LESSON",
+            Video.is_active.is_(True),
+            Video.stt_status == "FAILED",
+        )
+        .limit(1)
+    )
+    if failed_video is None:
+        return
+    for job in db.scalars(
+        select(ProcessingJob).where(
+            ProcessingJob.section_id == section_id,
+            ProcessingJob.kind == "QUIZ",
+            ProcessingJob.status == "PENDING",
+        )
+    ):
+        job.status = "FAILED"
+        job.error_code = TRANSCRIPT_FAILURE
+        job.finished_at = datetime.now(UTC)
+        quiz.ai_status = "FAILED"
+    db.flush()
+
+
+def resume_section_quiz(db: Session, video: Video) -> ProcessingJob | None:
+    """대본을 기다리던 퀴즈만 재개한다. 호출자는 course 잠금을 유지한다."""
+    if not video.is_active or video.video_type != "LESSON" or video.section_id is None:
+        return None
+    db.flush()
+    quiz = active_unit_quiz(db, video.section_id)
+    if quiz is None or quiz.reviewed_at is not None or quiz.ai_status not in ("PENDING", "FAILED"):
+        return None
+    try:
+        if section_input(db, video.section_id) is None:
+            return None
+    except ProcessingError:
+        return None  # 다른 영상도 유효한 대본을 갖춘 뒤 재개한다.
+    pending = db.scalar(
+        select(ProcessingJob).where(
+            ProcessingJob.section_id == video.section_id,
+            ProcessingJob.kind == "QUIZ",
+            ProcessingJob.status.in_(OPEN_STATUSES),
+        )
+    )
+    if pending is not None:
+        return pending if pending.status == "PENDING" else None
+    latest = db.scalar(
+        select(ProcessingJob)
+        .where(
+            ProcessingJob.section_id == video.section_id,
+            ProcessingJob.kind == "QUIZ",
+            ProcessingJob.finished_at.is_not(None),
+        )
+        .order_by(ProcessingJob.finished_at.desc())
+        .limit(1)
+    )
+    if latest is None or latest.status != "FAILED" or latest.error_code != TRANSCRIPT_FAILURE:
+        return None
+    return queue_section(db, video.course_id, video.section_id)
+
+
 def queue_video(db: Session, video: Video) -> ProcessingJob:
     db.flush()
     cancel_jobs(db, video_id=video.id)
@@ -101,6 +169,7 @@ def queue_video(db: Session, video: Video) -> ProcessingJob:
     db.add(job)
     if video.video_type == "LESSON" and video.section_id is not None:
         queue_section(db, video.course_id, video.section_id)
+        _fail_waiting_quiz(db, video.section_id)
     db.flush()
     return job
 
@@ -110,6 +179,9 @@ def _set_domain_status(db: Session, job: ProcessingJob, status: str) -> None:
         video = db.get(Video, job.video_id)
         if video is not None and video.is_active:
             video.stt_status = status
+            if status == "FAILED" and video.video_type == "LESSON" and video.section_id is not None:
+                db.flush()
+                _fail_waiting_quiz(db, video.section_id)
     else:
         quiz = active_unit_quiz(db, job.section_id)
         if quiz is not None:
@@ -195,6 +267,7 @@ def _complete_video(job_id: str, correction) -> int | None:
         video.transcript_reviewed_at = None
         job.status = "COMPLETED"
         job.finished_at = datetime.now(UTC)
+        resume_section_quiz(db, video)
         return video.section_id if video.video_type == "LESSON" else None
 
 
