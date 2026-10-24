@@ -23,7 +23,10 @@ def operator_headers(operator) -> dict[str, str]:
 
 @pytest.fixture
 def courses(db, get_user) -> dict:
-    """공개 2개, 운영자 비공개 1개, 작성 중 1개, 수정 중 1개."""
+    """공개 2개, 운영자 비공개 1개, 작성 중 1개, 수정 중 1개.
+
+    공개일 최신순: 웹(1일 전) > 보고서(2일 전) > 엑셀(3일 전) > 수정 중(4일 전)
+    """
     instructor1 = get_user("instructor1@baeugo.test")
     instructor2 = get_user("instructor2@baeugo.test")
     excel = make_course(
@@ -52,7 +55,19 @@ def courses(db, get_user) -> dict:
     report.closed_reason = "저작권 문제가 있는 영상 포함"
     draft = make_course(db, instructor1, title="작성 중 강좌", status="DRAFT")
     draft.published_at = None
-    editing = make_course(db, instructor2, title="수정 중 강좌", status="EDITING")
+    editing = make_course(
+        db,
+        instructor2,
+        title="수정 중 강좌",
+        status="EDITING",
+        category_id=5,
+        topic_id=51,
+        published_at=NOW - timedelta(days=4),
+    )
+    # 강사가 수정을 시작하며 남긴 기록(B-4)
+    editing.closed_by_user_id = instructor2.id
+    editing.closed_at = NOW - timedelta(hours=1)
+    enroll(db, get_user("learner1@baeugo.test"), editing)
     for learner_email in ("learner1@baeugo.test", "learner2@baeugo.test"):
         enroll(db, get_user(learner_email), excel)
     enroll(db, get_user("learner2@baeugo.test"), report)
@@ -77,13 +92,18 @@ def assert_list_filter_error(response) -> None:
 # ---------- OP-1 강좌 목록 ----------
 
 
-def test_list_shows_published_and_hidden_recent_first(client, operator_headers, courses):
+def test_list_shows_published_editing_and_hidden_recent_first(client, operator_headers, courses):
     response = list_courses(client, operator_headers)
 
     assert response.status_code == 200
     data = response.json()["data"]
-    assert (data["page"], data["size"], data["total"]) == (1, 20, 3)
-    assert titles(response) == ["웹 개발 입문", "보고서 작성법", "실무자를 위한 엑셀 자동화"]
+    assert (data["page"], data["size"], data["total"]) == (1, 20, 4)
+    assert titles(response) == [
+        "웹 개발 입문",
+        "보고서 작성법",
+        "실무자를 위한 엑셀 자동화",
+        "수정 중 강좌",
+    ]
 
 
 def test_list_item_matches_spec(client, operator_headers, courses, get_user):
@@ -123,6 +143,7 @@ def test_hidden_course_shows_close_info(client, operator_headers, courses, opera
     ("status", "expected"),
     [
         ("PUBLISHED", ["웹 개발 입문", "실무자를 위한 엑셀 자동화"]),
+        ("EDITING", ["수정 중 강좌"]),
         ("OPERATOR_HIDDEN", ["보고서 작성법"]),
     ],
 )
@@ -131,7 +152,7 @@ def test_status_filter(client, operator_headers, courses, status, expected):
 
 
 @pytest.mark.parametrize(
-    "params", [{"status": "DRAFT"}, {"status": "EDITING"}, {"sort": "popular"}]
+    "params", [{"status": "DRAFT"}, {"status": "UNKNOWN"}, {"sort": "popular"}]
 )
 def test_invalid_status_or_sort_is_rejected(client, operator_headers, courses, params):
     assert_list_filter_error(list_courses(client, operator_headers, **params))
@@ -140,20 +161,27 @@ def test_invalid_status_or_sort_is_rejected(client, operator_headers, courses, p
 def test_sort_by_enrollments(client, operator_headers, courses):
     response = list_courses(client, operator_headers, sort="enrollments")
 
-    assert titles(response) == ["실무자를 위한 엑셀 자동화", "보고서 작성법", "웹 개발 입문"]
+    # 수강생 수가 같으면(보고서·수정 중 1명) 공개일 최신순
+    assert titles(response) == [
+        "실무자를 위한 엑셀 자동화",
+        "보고서 작성법",
+        "수정 중 강좌",
+        "웹 개발 입문",
+    ]
     counts = [item["enrollmentCount"] for item in response.json()["data"]["items"]]
-    assert counts == [2, 1, 0]
+    assert counts == [2, 1, 1, 0]
 
 
 @pytest.mark.parametrize(
     ("q", "expected"),
     [
         ("엑셀", ["실무자를 위한 엑셀 자동화"]),
-        ("정다온", ["웹 개발 입문"]),
+        ("정다온", ["웹 개발 입문", "수정 중 강좌"]),
         ("이하늘", ["보고서 작성법", "실무자를 위한 엑셀 자동화"]),
-        ("수정 중", []),
+        ("수정 중", ["수정 중 강좌"]),
+        ("작성 중", []),
         ("%", []),
-        ("  ", ["웹 개발 입문", "보고서 작성법", "실무자를 위한 엑셀 자동화"]),
+        ("  ", ["웹 개발 입문", "보고서 작성법", "실무자를 위한 엑셀 자동화", "수정 중 강좌"]),
     ],
 )
 def test_search_by_course_title_or_instructor_name(client, operator_headers, courses, q, expected):
@@ -165,6 +193,7 @@ def test_search_by_course_title_or_instructor_name(client, operator_headers, cou
     [
         ({"categoryId": 6}, ["실무자를 위한 엑셀 자동화"]),
         ({"jobCategory": "DEV_IT"}, ["웹 개발 입문"]),
+        ({"jobCategory": "DESIGN"}, ["수정 중 강좌"]),
         ({"categoryId": 1, "jobCategory": "PLANNING_PM"}, ["보고서 작성법"]),
         ({"jobCategory": "UNKNOWN"}, []),
         ({"categoryId": 999}, []),
@@ -186,8 +215,8 @@ def test_pagination(client, operator_headers, courses):
     second = list_courses(client, operator_headers, page=2, size=2)
 
     assert titles(first) == ["웹 개발 입문", "보고서 작성법"]
-    assert titles(second) == ["실무자를 위한 엑셀 자동화"]
-    assert second.json()["data"]["total"] == 3
+    assert titles(second) == ["실무자를 위한 엑셀 자동화", "수정 중 강좌"]
+    assert second.json()["data"]["total"] == 4
 
 
 @pytest.mark.parametrize("params", [{"page": 0}, {"size": 0}, {"size": 101}, {"q": "가" * 101}])
@@ -382,9 +411,18 @@ def test_hidden_course_detail_is_visible(client, operator_headers, courses):
     assert response.json()["data"]["closedReason"] == "저작권 문제가 있는 영상 포함"
 
 
-@pytest.mark.parametrize("key", ["draft", "editing"])
-def test_draft_and_editing_course_detail_is_not_found(client, operator_headers, courses, key):
-    response = client.get(f"{COURSES_URL}/{courses[key].id}", headers=operator_headers)
+def test_editing_course_detail_is_visible(client, operator_headers, courses, get_user):
+    response = client.get(f"{COURSES_URL}/{courses['editing'].id}", headers=operator_headers)
+
+    assert response.status_code == 200
+    data = response.json()["data"]
+    assert data["status"] == "EDITING"
+    assert data["closedByUserId"] == get_user("instructor2@baeugo.test").id
+    assert data["closedReason"] is None
+
+
+def test_draft_course_detail_is_not_found(client, operator_headers, courses):
+    response = client.get(f"{COURSES_URL}/{courses['draft'].id}", headers=operator_headers)
 
     assert response.status_code == 404
     assert response.json()["error"] == {"code": "NOT_FOUND", "message": "존재하지 않는 강좌입니다."}
@@ -438,8 +476,29 @@ def test_reason_of_500_characters_is_accepted(client, operator_headers, courses)
     assert response.status_code == 200
 
 
-@pytest.mark.parametrize("key", ["report", "draft", "editing"])
-def test_only_published_course_can_be_unpublished(client, operator_headers, courses, key):
+def test_unpublish_editing_course_overwrites_instructor_record(
+    client, operator_headers, operator, courses
+):
+    editing = courses["editing"]
+
+    response = unpublish(
+        client, operator_headers, editing.id, {"reason": "수정 중 유해 콘텐츠 발견"}
+    )
+
+    assert response.status_code == 200
+    data = response.json()["data"]
+    closed_at = datetime.fromisoformat(data["closedAt"])
+    assert (data["status"], data["closedByUserId"]) == ("OPERATOR_HIDDEN", operator.id)
+    assert closed_at > NOW
+    assert (editing.status, editing.closed_by_user_id) == ("OPERATOR_HIDDEN", operator.id)
+    assert editing.closed_at == closed_at
+    assert editing.closed_reason == "수정 중 유해 콘텐츠 발견"
+
+
+@pytest.mark.parametrize("key", ["report", "draft"])
+def test_only_published_or_editing_course_can_be_unpublished(
+    client, operator_headers, courses, key
+):
     course = courses[key]
     status_before = course.status
 
@@ -448,7 +507,7 @@ def test_only_published_course_can_be_unpublished(client, operator_headers, cour
     assert response.status_code == 409
     assert response.json()["error"] == {
         "code": "NOT_PUBLISHED",
-        "message": "현재 공개 중인(PUBLISHED) 강좌만 비공개 처리할 수 있습니다.",
+        "message": "공개 중이거나 수정 중인 강좌만 비공개 처리할 수 있습니다.",
     }
     assert course.status == status_before
 

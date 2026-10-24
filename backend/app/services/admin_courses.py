@@ -20,8 +20,11 @@ from app.schemas.quiz import QuestionItem
 from app.services.admin_users import LIKE_ESCAPE, escape_like
 from app.services.storage import get_profile_image_url, get_thumbnail_url, get_video_stream_url
 
-# 운영자는 공개 중이거나 직접 내린 강좌만 다룬다. 작성·수정 중인 강좌는 점검 대상이 아니다.
-VISIBLE_STATUSES = ("PUBLISHED", "OPERATOR_HIDDEN")
+# 운영자는 공개 이력이 있는 강좌만 다룬다. EDITING은 PUBLISHED에서만 넘어오므로 포함하고,
+# 한 번도 공개되지 않은 DRAFT는 점검 대상이 아니다.
+VISIBLE_STATUSES = ("PUBLISHED", "EDITING", "OPERATOR_HIDDEN")
+# 운영자가 내릴 수 있는 상태. EDITING도 기존 수강생에게는 계속 노출되므로 내릴 수 있어야 한다.
+UNPUBLISHABLE_STATUSES = ("PUBLISHED", "EDITING")
 SORTS = ("recent", "enrollments")
 MAX_REASON_LENGTH = 500
 
@@ -49,7 +52,7 @@ def list_courses(
             400,
             "VALIDATION_ERROR",
             LIST_FILTER_MESSAGE,
-            fields={"status": "PUBLISHED 또는 OPERATOR_HIDDEN만 사용할 수 있습니다."},
+            fields={"status": "PUBLISHED, EDITING, OPERATOR_HIDDEN만 사용할 수 있습니다."},
         )
     sort = sort or "recent"
     if sort not in SORTS:
@@ -299,11 +302,12 @@ def unpublish_course(
     course = db.get(Course, course_id, with_for_update=True, populate_existing=True)
     if course is None:
         raise AppError(404, "NOT_FOUND", COURSE_NOT_FOUND_MESSAGE)
-    if course.status != "PUBLISHED":
+    if course.status not in UNPUBLISHABLE_STATUSES:
         raise AppError(
-            409, "NOT_PUBLISHED", "현재 공개 중인(PUBLISHED) 강좌만 비공개 처리할 수 있습니다."
+            409, "NOT_PUBLISHED", "공개 중이거나 수정 중인 강좌만 비공개 처리할 수 있습니다."
         )
 
+    # EDITING이면 강사가 수정을 시작하며 남긴 기록을 운영자 기록으로 덮어쓴다.
     course.status = "OPERATOR_HIDDEN"
     course.closed_by_user_id = operator.id
     course.closed_at = datetime.now(UTC)
