@@ -56,7 +56,7 @@ CurrentUser = Annotated[User, Depends(get_current_user)]
 
 def require_operator(user: CurrentUser) -> User:
     if user.account_type != AccountType.OPERATOR:
-        raise AppError(403, "FORBIDDEN", "운영자만 이용할 수 있습니다.")
+        raise AppError(403, "FORBIDDEN", "운영자 권한이 필요합니다.")
     return user
 
 
