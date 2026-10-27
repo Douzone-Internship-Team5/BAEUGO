@@ -45,11 +45,19 @@ def test_m_openapi_contract_matches_spec(client: TestClient):
     m1_params = m1_get["parameters"]
     assert any(p["name"] == "id" and p["in"] == "path" for p in m1_params)
     assert m1_get.get("security") == [{"HTTPBearer": []}]
+    assert "200" in m1_get["responses"]
+    assert "206" in m1_get["responses"]
+    assert "video/mp4" in m1_get["responses"]["200"]["content"]
+    assert "video/webm" in m1_get["responses"]["200"]["content"]
+    assert "video/mp4" in m1_get["responses"]["206"]["content"]
 
     m2_get = schema["paths"]["/api/v1/media/{storageKey}"]["get"]
     m2_params = m2_get["parameters"]
     assert any(p["name"] == "storageKey" and p["in"] == "path" for p in m2_params)
     assert "security" not in m2_get
+    assert "200" in m2_get["responses"]
+    assert "image/jpeg" in m2_get["responses"]["200"]["content"]
+    assert "image/png" in m2_get["responses"]["200"]["content"]
 
 
 def test_m1_ot_video_streaming_full_and_ranges(
@@ -764,3 +772,79 @@ def test_m1_zero_byte_file_and_republished_curriculum_edge_cases(
     res_v2_unlocked = client.get(f"/api/v1/videos/{v2.id}/stream", headers=auth_header(learner.id))
     assert res_v2_unlocked.status_code == 200
     assert res_v2_unlocked.content == b"lesson-content"
+
+
+def test_m1_various_video_formats_mime_types_and_sectionless_lesson_parity(
+    client: TestClient, db: Session, get_user, media_root: Path
+):
+    instructor = get_user("instructor1@baeugo.test")
+    learner = get_user("learner2@baeugo.test")
+    course = make_course(db, instructor, status="PUBLISHED")
+    sec = make_section(db, course, title="섹션 1")
+
+    # 1. WebM, MOV, MKV, AVI 등 다양한 확장자의 비디오 스트리밍 Content-Type 검증
+    format_cases = [
+        ("courses/101/lesson_sample.webm", "video/webm", ".webm"),
+        ("courses/101/lesson_sample.mov", "video/quicktime", ".mov"),
+        ("courses/101/lesson_sample.mkv", "video/x-matroska", ".mkv"),
+        ("courses/101/lesson_sample.avi", "video/x-msvideo", ".avi"),
+    ]
+
+    enr = enroll(db, learner, course)
+    db.commit()
+
+    for idx, (storage_key, expected_mime, ext) in enumerate(format_cases, start=1):
+        vid = make_video(
+            db,
+            course,
+            section=sec,
+            video_type="LESSON",
+            title=f"포맷 테스트 {ext}",
+            sort_order=idx,
+        )
+        vid.video_storage_key = storage_key
+        # 선행 영상 완료 처리하여 잠금 해제
+        db.add(
+            VideoProgress(
+                enrollment_id=enr.id,
+                video_id=vid.id,
+                watched_ranges=[[0, 100]],
+                watched_seconds=100,
+                last_position_seconds=100,
+                is_completed=True,
+                completed_at=datetime.now(UTC),
+            )
+        )
+        write_media_file(media_root, storage_key, b"binary-video-payload-content-" + ext.encode())
+        db.commit()
+
+        # 전체 스트리밍 (200 OK)
+        res = client.get(f"/api/v1/videos/{vid.id}/stream", headers=auth_header(learner.id))
+        assert res.status_code == 200
+        assert res.headers["content-type"] == expected_mime
+
+        # 부분 스트리밍 (206 Partial Content)
+        res_range = client.get(
+            f"/api/v1/videos/{vid.id}/stream",
+            headers={"Range": "bytes=0-10", **auth_header(learner.id)},
+        )
+        assert res_range.status_code == 206
+        assert res_range.headers["content-type"] == expected_mime
+
+    # 2. C-5 동일 검증: LESSON 영상이 활성 섹션에 속하지 않은 경우(section_id IS NULL) 404 NOT_FOUND
+    orphan_lesson = make_video(
+        db,
+        course,
+        section=None,
+        video_type="LESSON",
+        title="고아 레슨 영상",
+        sort_order=99,
+    )
+    write_media_file(media_root, orphan_lesson.video_storage_key, b"orphan-content")
+    db.commit()
+
+    res_orphan = client.get(
+        f"/api/v1/videos/{orphan_lesson.id}/stream", headers=auth_header(learner.id)
+    )
+    assert res_orphan.status_code == 404
+    assert res_orphan.json()["error"]["code"] == "NOT_FOUND"

@@ -24,6 +24,14 @@ IMAGE_NOT_FOUND_MESSAGE = "이미지를 찾을 수 없습니다."
 
 CHUNK_SIZE = 64 * 1024
 
+VIDEO_CONTENT_TYPES: dict[str, str] = {
+    ".mp4": "video/mp4",
+    ".webm": "video/webm",
+    ".mov": "video/quicktime",
+    ".avi": "video/x-msvideo",
+    ".mkv": "video/x-matroska",
+}
+
 IMAGE_CONTENT_TYPES: dict[str, str] = {
     ".jpg": "image/jpeg",
     ".jpeg": "image/jpeg",
@@ -173,22 +181,16 @@ def _verify_video_stream_access(db: Session, video: Video, user: User | None) ->
         ).all()
     )
 
-    # 커리큘럼 순서대로 선행 학습 영상 및 단위 확인 퀴즈 완료 여부 검증
-    active_lessons = [v for v in course.videos if v.is_active and v.video_type == "LESSON"]
-    sectionless_lessons = sorted(
-        (v for v in active_lessons if v.section_id is None),
-        key=lambda v: (v.sort_order, v.id),
-    )
-    for lesson in sectionless_lessons:
-        if lesson.id == video.id:
-            return
-        if lesson.id not in completed_video_ids:
-            raise AppError(403, "FORBIDDEN", VIDEO_FORBIDDEN_MESSAGE)
-
+    # 커리큘럼 순서대로 선행 학습 영상 및 단위 확인 퀴즈 완료 여부 검증 (C-5 feat/learning 동일 기준)
     active_sections = sorted(
         (s for s in course.sections if s.is_active),
         key=lambda s: (s.sort_order, s.id),
     )
+    active_section_ids = {s.id for s in active_sections}
+    active_lessons = [
+        v for v in course.videos
+        if v.is_active and v.video_type == "LESSON" and v.section_id in active_section_ids
+    ]
     active_unit_quizzes = [q for q in course.quizzes if q.is_active and q.quiz_type == "UNIT"]
 
     for section in active_sections:
@@ -290,7 +292,7 @@ def stream_video(db: Session, request: Request, video_id: int) -> Response:
     if video.video_type not in ("OT", "LESSON"):
         raise AppError(404, "NOT_FOUND", VIDEO_NOT_FOUND_MESSAGE)
 
-    if video.section_id is not None and (video.section is None or not video.section.is_active):
+    if video.video_type == "LESSON" and (video.section is None or not video.section.is_active):
         raise AppError(404, "NOT_FOUND", VIDEO_NOT_FOUND_MESSAGE)
 
     if video.course is None:
@@ -305,13 +307,15 @@ def stream_video(db: Session, request: Request, video_id: int) -> Response:
         raise AppError(404, "NOT_FOUND", VIDEO_NOT_FOUND_MESSAGE)
 
     file_size = file_path.stat().st_size
+    ext = file_path.suffix.lower()
+    media_type = VIDEO_CONTENT_TYPES.get(ext, "video/mp4")
     range_header = request.headers.get("Range")
 
     if range_header is None or not range_header.strip():
         return StreamingResponse(
             content=_iter_file_range(file_path, 0, file_size),
             status_code=200,
-            media_type="video/mp4",
+            media_type=media_type,
             headers={
                 "Accept-Ranges": "bytes",
                 "Content-Length": str(file_size),
@@ -333,7 +337,7 @@ def stream_video(db: Session, request: Request, video_id: int) -> Response:
     return StreamingResponse(
         content=_iter_file_range(file_path, start, content_length),
         status_code=206,
-        media_type="video/mp4",
+        media_type=media_type,
         headers={
             "Accept-Ranges": "bytes",
             "Content-Range": f"bytes {start}-{end}/{file_size}",
