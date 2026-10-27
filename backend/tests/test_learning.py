@@ -1,12 +1,12 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime, timedelta
 
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy.orm import Session
 
-from app.core.timezone import today_in_seoul
+from app.core.timezone import SEOUL_TZ, today_in_seoul
 from app.models import (
     AttendanceDay,
     CourseDailyStat,
@@ -14,6 +14,7 @@ from app.models import (
     QuestionRecord,
     QuizAttempt,
     Role,
+    StudyActivitySession,
     UserRole,
     VideoProgress,
 )
@@ -869,6 +870,41 @@ def test_c7_video_progress_merge_completion_and_attendance(
     enr = enroll(db, learner, course)
     db.commit()
 
+    # 0. 선행 영상(v1) 미완료 상태에서 v2 진도 저장 시도 -> 403 FORBIDDEN 차단
+    res_locked = client.put(
+        f"/api/v1/videos/{v2.id}/progress",
+        json={
+            "lastPositionSeconds": 120,
+            "watchedRange": [0, 120],
+            "activitySession": {
+                "sessionKey": "sess-v2-locked",
+                "startedAt": "2026-10-17T08:00:00+09:00",
+                "endedAt": "2026-10-17T08:10:20+09:00",
+                "activeSeconds": 620,
+            },
+        },
+        headers=auth_header(learner.id),
+    )
+    assert res_locked.status_code == 403
+    assert (
+        res_locked.json()["error"]["message"]
+        == "수강 등록이 되어 있지 않거나 이전 학습 단계를 먼저 완료해야 합니다."
+    )
+
+    # v1 완료 처리 후 v2 잠금 해제
+    db.add(
+        VideoProgress(
+            enrollment_id=enr.id,
+            video_id=v1.id,
+            watched_ranges=[[0, v1.duration_seconds]],
+            watched_seconds=v1.duration_seconds,
+            last_position_seconds=v1.duration_seconds,
+            is_completed=True,
+            completed_at=datetime.now(UTC),
+        )
+    )
+    db.commit()
+
     # v2 길이: 240초 -> 90% 완료 기준: 216초
     # 1. PUT [0, 120] 시청 (50.0%, 미완료), activeSeconds=620 (목표 20분=1200초 미달성)
     res1 = client.put(
@@ -943,7 +979,7 @@ def test_c7_video_progress_merge_completion_and_attendance(
     assert res_retry.status_code == 200
     assert res_retry.json()["data"]["todayActiveSeconds"] == 1220
 
-    att = db.get(AttendanceDay, (learner.id, today_in_seoul()))
+    att = db.get(AttendanceDay, (learner.id, date(2026, 10, 17)))
     assert att is not None
     assert att.active_seconds == 1220
     assert att.is_attended is True
@@ -971,7 +1007,7 @@ def test_c7_video_progress_validation_and_forbidden(
     db.commit()
 
     res = client.put(
-        f"/api/v1/videos/{v2.id}/progress",
+        f"/api/v1/videos/{v1.id}/progress",
         json={
             "lastPositionSeconds": bad_pos,
             "watchedRange": bad_range,
@@ -1441,7 +1477,7 @@ def test_c7_naive_and_mixed_timezone_datetimes_and_simultaneous_deduplication(
 
     # 2. 다른 탭에서 동일한 시간대 [08:00:00, 08:10:00] 동시 시청 시 중복 합산 제외 (600초 유지)
     res_simul = client.put(
-        f"/api/v1/videos/{v2.id}/progress",
+        f"/api/v1/videos/{v1.id}/progress",
         json={
             "lastPositionSeconds": 60,
             "watchedRange": [0, 60],
@@ -1531,3 +1567,399 @@ def test_c8_like_count_drift_sync_and_c5_draft_owner_access(
         client.get(f"/api/v1/videos/{draft_v1.id}", headers=auth_header(operator.id)).status_code
         == 200
     )
+
+
+def test_c7_lock_and_exemption_rules_match_c5(client: TestClient, db: Session, get_user):
+    instructor = get_user("instructor1@baeugo.test")
+    learner = get_user("learner2@baeugo.test")
+    course, ot, sec1, v1, v2, uq1, sec2, v3, uq2, fq = _build_full_course(db, instructor)
+    enr = enroll(db, learner, course)
+    db.commit()
+
+    def _progress_payload(key: str):
+        return {
+            "lastPositionSeconds": 10,
+            "watchedRange": [0, 10],
+            "activitySession": {
+                "sessionKey": key,
+                "startedAt": "2026-10-17T10:00:00+09:00",
+                "endedAt": "2026-10-17T10:00:10+09:00",
+                "activeSeconds": 10,
+            },
+        }
+
+    # 1. v1 미완료 시 v2, v3 모두 잠금(403)
+    assert (
+        client.put(
+            f"/api/v1/videos/{v2.id}/progress",
+            json=_progress_payload("lock-v2"),
+            headers=auth_header(learner.id),
+        ).status_code
+        == 403
+    )
+    assert (
+        client.put(
+            f"/api/v1/videos/{v3.id}/progress",
+            json=_progress_payload("lock-v3"),
+            headers=auth_header(learner.id),
+        ).status_code
+        == 403
+    )
+
+    # 2. v1, v2를 완료하더라도 섹션 1 단위 퀴즈(uq1) 미제출 시 섹션 2 영상(v3)은 잠금(403)
+    for vid in (v1, v2):
+        db.add(
+            VideoProgress(
+                enrollment_id=enr.id,
+                video_id=vid.id,
+                watched_ranges=[[0, vid.duration_seconds]],
+                watched_seconds=vid.duration_seconds,
+                last_position_seconds=vid.duration_seconds,
+                is_completed=True,
+                completed_at=datetime.now(UTC),
+            )
+        )
+    db.commit()
+
+    assert (
+        client.put(
+            f"/api/v1/videos/{v3.id}/progress",
+            json=_progress_payload("lock-v3-quiz-unsubmitted"),
+            headers=auth_header(learner.id),
+        ).status_code
+        == 403
+    )
+
+    # 3. 예외 ②: 최초 수료 이력(first_completed_at IS NOT NULL) 보유 시 진도 저장 허용(200)
+    enr.first_completed_at = datetime.now(UTC)
+    db.commit()
+    assert (
+        client.put(
+            f"/api/v1/videos/{v3.id}/progress",
+            json=_progress_payload("unlock-v3-first-comp"),
+            headers=auth_header(learner.id),
+        ).status_code
+        == 200
+    )
+
+    # 4. 예외 ①: 이미 완료한 영상(v1)은 후속 미완료 항목 존재 여부와 무관하게 진도 재저장 허용(200)
+    assert (
+        client.put(
+            f"/api/v1/videos/{v1.id}/progress",
+            json=_progress_payload("revisit-v1-completed"),
+            headers=auth_header(learner.id),
+        ).status_code
+        == 200
+    )
+
+    # 5. DRAFT 강좌의 영상 진도 저장은 403 차단
+    draft_course, _, _, draft_v1, *_ = _build_full_course(db, instructor, status="DRAFT")
+    enroll(db, learner, draft_course)
+    db.commit()
+    assert (
+        client.put(
+            f"/api/v1/videos/{draft_v1.id}/progress",
+            json=_progress_payload("draft-course-blocked"),
+            headers=auth_header(learner.id),
+        ).status_code
+        == 403
+    )
+
+    # 6. 예외 ③: 강좌 소유 강사 본인이 수강 등록되어 있는 경우 잠금 없이 진도 저장 허용(200)
+    db.add(UserRole(user_id=instructor.id, role=Role.LEARNER))
+    instructor.active_mode = Role.LEARNER
+    enroll(db, instructor, course)
+    db.commit()
+    assert (
+        client.put(
+            f"/api/v1/videos/{v3.id}/progress",
+            json=_progress_payload("owner-instructor-unlocked"),
+            headers=auth_header(instructor.id),
+        ).status_code
+        == 200
+    )
+
+
+def test_c7_activity_seconds_elapsed_and_future_time_validation(
+    client: TestClient, db: Session, get_user
+):
+    instructor = get_user("instructor1@baeugo.test")
+    learner = get_user("learner2@baeugo.test")
+    course, ot, sec1, v1, *_ = _build_full_course(db, instructor)
+    enroll(db, learner, course)
+    db.commit()
+
+    # 1. 시작~종료 간격이 1초인데 activeSeconds=1200 전송 -> 400 VALIDATION_ERROR
+    res_exceed = client.put(
+        f"/api/v1/videos/{v1.id}/progress",
+        json={
+            "lastPositionSeconds": 10,
+            "watchedRange": [0, 10],
+            "activitySession": {
+                "sessionKey": "sess-exceed-elapsed",
+                "startedAt": "2026-10-17T08:00:00+09:00",
+                "endedAt": "2026-10-17T08:00:01+09:00",
+                "activeSeconds": 1200,
+            },
+        },
+        headers=auth_header(learner.id),
+    )
+    assert res_exceed.status_code == 400
+    assert res_exceed.json()["error"]["code"] == "VALIDATION_ERROR"
+
+    # 2. 명백한 미래 시각 전송 -> 400 VALIDATION_ERROR
+    future_start = (datetime.now(SEOUL_TZ) + timedelta(hours=1)).isoformat()
+    future_end = (datetime.now(SEOUL_TZ) + timedelta(hours=1, minutes=5)).isoformat()
+    res_future = client.put(
+        f"/api/v1/videos/{v1.id}/progress",
+        json={
+            "lastPositionSeconds": 10,
+            "watchedRange": [0, 10],
+            "activitySession": {
+                "sessionKey": "sess-future",
+                "startedAt": future_start,
+                "endedAt": future_end,
+                "activeSeconds": 10,
+            },
+        },
+        headers=auth_header(learner.id),
+    )
+    assert res_future.status_code == 400
+    assert res_future.json()["error"]["code"] == "VALIDATION_ERROR"
+
+    # 3. 기존 세션 재사용 시 증가한 activeSeconds가 누적 경과 시간 초과 시 -> 400 VALIDATION_ERROR
+    res_valid_start = client.put(
+        f"/api/v1/videos/{v1.id}/progress",
+        json={
+            "lastPositionSeconds": 10,
+            "watchedRange": [0, 10],
+            "activitySession": {
+                "sessionKey": "sess-reused-exceed",
+                "startedAt": "2026-10-17T08:00:00+09:00",
+                "endedAt": "2026-10-17T08:01:00+09:00",
+                "activeSeconds": 60,
+            },
+        },
+        headers=auth_header(learner.id),
+    )
+    assert res_valid_start.status_code == 200
+
+    # 5초 뒤 종료 시각으로 갱신하면서 activeSeconds를 300초(총 65초 경과 대비 과다) 전송 시 차단
+    res_reused_exceed = client.put(
+        f"/api/v1/videos/{v1.id}/progress",
+        json={
+            "lastPositionSeconds": 10,
+            "watchedRange": [0, 10],
+            "activitySession": {
+                "sessionKey": "sess-reused-exceed",
+                "startedAt": "2026-10-17T08:00:00+09:00",
+                "endedAt": "2026-10-17T08:01:05+09:00",
+                "activeSeconds": 300,
+            },
+        },
+        headers=auth_header(learner.id),
+    )
+    assert res_reused_exceed.status_code == 400
+    assert res_reused_exceed.json()["error"]["code"] == "VALIDATION_ERROR"
+
+
+def test_c7_cross_midnight_session_daily_attendance_aggregation(
+    client: TestClient, db: Session, get_user
+):
+    instructor = get_user("instructor1@baeugo.test")
+    learner = get_user("learner2@baeugo.test")
+    course, ot, sec1, v1, *_ = _build_full_course(db, instructor)
+    enroll(db, learner, course)
+    db.commit()
+
+    # 1. 자정 전(2026-10-26 23:59:30 ~ 23:59:59) 누적 30초 저장
+    res_before_midnight = client.put(
+        f"/api/v1/videos/{v1.id}/progress",
+        json={
+            "lastPositionSeconds": 30,
+            "watchedRange": [0, 30],
+            "activitySession": {
+                "sessionKey": "sess-cross-midnight",
+                "startedAt": "2026-10-26T23:59:30+09:00",
+                "endedAt": "2026-10-26T23:59:59+09:00",
+                "activeSeconds": 30,
+            },
+        },
+        headers=auth_header(learner.id),
+    )
+    assert res_before_midnight.status_code == 200
+    assert res_before_midnight.json()["data"]["todayActiveSeconds"] == 30
+
+    # 2. 자정 후(2026-10-26 23:59:30 ~ 2026-10-27 00:01:00) 동일 sessionKey로 누적 90초 저장
+    res_after_midnight = client.put(
+        f"/api/v1/videos/{v1.id}/progress",
+        json={
+            "lastPositionSeconds": 90,
+            "watchedRange": [0, 90],
+            "activitySession": {
+                "sessionKey": "sess-cross-midnight",
+                "startedAt": "2026-10-26T23:59:30+09:00",
+                "endedAt": "2026-10-27T00:01:00+09:00",
+                "activeSeconds": 90,
+            },
+        },
+        headers=auth_header(learner.id),
+    )
+    assert res_after_midnight.status_code == 200
+    assert res_after_midnight.json()["data"]["todayActiveSeconds"] == 60
+
+    # 세션 원본에는 누적 90초가 기록되고, 출석(attendance_days)에는 전날 30초·당일 60초로 집계됨
+    sess = db.query(StudyActivitySession).filter_by(session_key="sess-cross-midnight").one()
+    assert sess.active_seconds == 90
+
+    att_prev = db.get(AttendanceDay, (learner.id, date(2026, 10, 26)))
+    att_curr = db.get(AttendanceDay, (learner.id, date(2026, 10, 27)))
+    assert att_prev is not None and att_prev.active_seconds == 30
+    assert att_curr is not None and att_curr.active_seconds == 60
+
+    # 3. 자정 후 동일 sessionKey로 3차 저장(누적 150초, 00:02:00까지 연장)
+    res_third = client.put(
+        f"/api/v1/videos/{v1.id}/progress",
+        json={
+            "lastPositionSeconds": 120,
+            "watchedRange": [0, 120],
+            "activitySession": {
+                "sessionKey": "sess-cross-midnight",
+                "startedAt": "2026-10-26T23:59:30+09:00",
+                "endedAt": "2026-10-27T00:02:00+09:00",
+                "activeSeconds": 150,
+            },
+        },
+        headers=auth_header(learner.id),
+    )
+    assert res_third.status_code == 200
+    assert res_third.json()["data"]["todayActiveSeconds"] == 120
+
+    db.refresh(att_prev)
+    db.refresh(att_curr)
+    # 전날 출석은 여전히 30초로 보존되고, 당일 출석은 120초(누적 150초 - 전날 30초)로 집계됨
+    assert att_prev.active_seconds == 30
+    assert att_curr.active_seconds == 120
+
+
+def test_c7_session_key_reuse_validates_video_id_and_activity_type_and_single_enrollment_recalc(
+    client: TestClient, db: Session, get_user
+):
+    instructor = get_user("instructor1@baeugo.test")
+    learner2 = get_user("learner2@baeugo.test")
+    learner1 = get_user("learner1@baeugo.test")
+    db.add(UserRole(user_id=learner1.id, role=Role.LEARNER))
+    learner1.active_mode = Role.LEARNER
+
+    course, ot, sec1, v1, v2, uq1, sec2, v3, uq2, fq = _build_full_course(db, instructor)
+    enr2 = enroll(db, learner2, course)
+    # 다른 수강생(learner1)의 수강 상태를 COMPLETED로 설정해 두고 영향받지 않는지 검증
+    enr1 = enroll(db, learner1, course, status="COMPLETED")
+    enr1.current_completed_at = datetime.now(UTC)
+    db.commit()
+
+    # 1. learner2가 v1을 90% 이상 시청하여 완료 (sessionKey: sess-v1-key)
+    res_v1 = client.put(
+        f"/api/v1/videos/{v1.id}/progress",
+        json={
+            "lastPositionSeconds": 360,
+            "watchedRange": [0, 360],
+            "activitySession": {
+                "sessionKey": "sess-v1-key",
+                "startedAt": "2026-10-17T08:00:00+09:00",
+                "endedAt": "2026-10-17T08:06:00+09:00",
+                "activeSeconds": 360,
+            },
+        },
+        headers=auth_header(learner2.id),
+    )
+    assert res_v1.status_code == 200
+    assert res_v1.json()["data"]["isCompleted"] is True
+
+    # learner2의 v1 완료 시 타 수강생(enr1)의 COMPLETED 상태는 그대로 유지되어야 함
+    db.refresh(enr1)
+    assert enr1.status == "COMPLETED"
+    assert enr1.current_completed_at is not None
+
+    # 2. 같은 강좌의 다른 영상(v2)에서 기존 v1의 sessionKey("sess-v1-key") 재사용 시 -> 400 차단
+    res_reuse_other_video = client.put(
+        f"/api/v1/videos/{v2.id}/progress",
+        json={
+            "lastPositionSeconds": 60,
+            "watchedRange": [0, 60],
+            "activitySession": {
+                "sessionKey": "sess-v1-key",
+                "startedAt": "2026-10-17T08:00:00+09:00",
+                "endedAt": "2026-10-17T08:07:00+09:00",
+                "activeSeconds": 400,
+            },
+        },
+        headers=auth_header(learner2.id),
+    )
+    assert res_reuse_other_video.status_code == 400
+    assert res_reuse_other_video.json()["error"]["code"] == "VALIDATION_ERROR"
+
+    # 기존 v1 세션의 active_seconds(360)와 video_id가 오염되지 않았는지 확인
+    sess_v1 = db.query(StudyActivitySession).filter_by(session_key="sess-v1-key").one()
+    assert sess_v1.video_id == v1.id
+    assert sess_v1.active_seconds == 360
+
+    # 3. 동일 enrollment의 QUIZ 활동 세션 키를 영상 진도 저장에 재사용 시 -> 400 차단
+    qa = QuizAttempt(
+        enrollment_id=enr2.id,
+        quiz_id=uq1.id,
+        attempt_type="UNIT",
+        attempt_no=1,
+        status="IN_PROGRESS",
+    )
+    db.add(qa)
+    db.flush()
+    db.add(
+        StudyActivitySession(
+            enrollment_id=enr2.id,
+            activity_type="QUIZ",
+            video_id=None,
+            quiz_attempt_id=qa.id,
+            session_key="sess-quiz-key",
+            study_date=date(2026, 10, 17),
+            started_at=datetime(2026, 10, 17, 8, 10, 0, tzinfo=SEOUL_TZ),
+            ended_at=datetime(2026, 10, 17, 8, 11, 0, tzinfo=SEOUL_TZ),
+            active_seconds=60,
+        )
+    )
+    db.commit()
+
+    res_reuse_quiz_key = client.put(
+        f"/api/v1/videos/{v2.id}/progress",
+        json={
+            "lastPositionSeconds": 60,
+            "watchedRange": [0, 60],
+            "activitySession": {
+                "sessionKey": "sess-quiz-key",
+                "startedAt": "2026-10-17T08:10:00+09:00",
+                "endedAt": "2026-10-17T08:12:00+09:00",
+                "activeSeconds": 90,
+            },
+        },
+        headers=auth_header(learner2.id),
+    )
+    assert res_reuse_quiz_key.status_code == 400
+    assert res_reuse_quiz_key.json()["error"]["code"] == "VALIDATION_ERROR"
+
+    # 4. 타인의 수강(enrollment)에서 생성된 sessionKey 재사용 시 -> 400 차단
+    res_reuse_other_enrollment = client.put(
+        f"/api/v1/videos/{v1.id}/progress",
+        json={
+            "lastPositionSeconds": 30,
+            "watchedRange": [0, 30],
+            "activitySession": {
+                "sessionKey": "sess-v1-key",
+                "startedAt": "2026-10-17T08:00:00+09:00",
+                "endedAt": "2026-10-17T08:01:00+09:00",
+                "activeSeconds": 30,
+            },
+        },
+        headers=auth_header(learner1.id),
+    )
+    assert res_reuse_other_enrollment.status_code == 400
+    assert res_reuse_other_enrollment.json()["error"]["code"] == "VALIDATION_ERROR"

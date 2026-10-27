@@ -2,9 +2,9 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 
-from sqlalchemy import delete, func, select
+from sqlalchemy import and_, delete, func, or_, select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import Session, joinedload, selectinload
 
@@ -56,10 +56,10 @@ from app.schemas.learning import (
     VideoViewResponse,
 )
 from app.schemas.search import CategorySimple, TopicSimple
-from app.services.course_service import recalculate_enrollments_progress
 from app.services.storage import get_thumbnail_url, get_video_stream_url
 
 DEFAULT_DAILY_GOAL_MINUTES = 20
+MAX_FUTURE_SKEW_SECONDS = 5
 
 COURSE_NOT_FOUND_MESSAGE = "존재하지 않는 강좌입니다."
 COURSE_HIDDEN_MESSAGE = "현재 비공개 상태인 강좌입니다."
@@ -1093,7 +1093,131 @@ def _ensure_seoul_aware(dt: datetime) -> datetime:
     return dt.astimezone(SEOUL_TZ)
 
 
-def _compute_deduplicated_active_seconds(sessions: list[StudyActivitySession]) -> int:
+def _effective_end_for_midnight_truncation(started_at: datetime, ended_at: datetime) -> datetime:
+    """자정 직전 시각이 초 단위(23:59:59)로 절삭 표현된 경우 자정(24:00:00)까지로 보정한다."""
+    if (
+        ended_at > started_at
+        and ended_at.hour == 23
+        and ended_at.minute == 59
+        and ended_at.second == 59
+        and ended_at.microsecond == 0
+    ):
+        return ended_at + timedelta(seconds=1)
+    return ended_at
+
+
+def _max_allowed_active_seconds(started_at: datetime, ended_at: datetime) -> int:
+    eff_end = _effective_end_for_midnight_truncation(started_at, ended_at)
+    elapsed = max(0.0, (eff_end - started_at).total_seconds())
+    return math.ceil(elapsed)
+
+
+def _get_day_bounds(study_date: date) -> tuple[datetime, datetime]:
+    day_start = datetime(
+        study_date.year, study_date.month, study_date.day, 0, 0, 0, tzinfo=SEOUL_TZ
+    )
+    return day_start, day_start + timedelta(days=1)
+
+
+def _split_session_into_daily_slices(
+    started_at: datetime,
+    ended_at: datetime,
+    active_seconds: int,
+    *,
+    locked_prior_day_seconds: dict[date, int] | None = None,
+) -> list[tuple[date, datetime, datetime, int]]:
+    """세션의 [started_at, ended_at] 구간을 Asia/Seoul 자정 기준으로 날짜별 분할한다."""
+    st = _ensure_seoul_aware(started_at)
+    et = _ensure_seoul_aware(ended_at)
+    act_sec = max(0, int(active_seconds or 0))
+
+    if st.date() == et.date() or et <= st:
+        return [(st.date(), st, et, act_sec)]
+
+    raw_segments: list[tuple[date, datetime, datetime, float]] = []
+    cur_date = st.date()
+    end_date = et.date()
+    while cur_date <= end_date:
+        day_start, day_end = _get_day_bounds(cur_date)
+        seg_st = max(st, day_start)
+        seg_et = min(et, day_end)
+        if seg_et > seg_st:
+            raw_segments.append((cur_date, seg_st, seg_et, (seg_et - seg_st).total_seconds()))
+        cur_date += timedelta(days=1)
+
+    if not raw_segments:
+        return [(st.date(), st, et, act_sec)]
+
+    if len(raw_segments) == 1:
+        d, seg_st, seg_et, _ = raw_segments[0]
+        return [(d, seg_st, seg_et, act_sec)]
+
+    if locked_prior_day_seconds:
+        allocated: dict[date, int] = {}
+        remaining = act_sec
+        for d, seg_st, seg_et, _ in raw_segments:
+            if d in locked_prior_day_seconds:
+                cap = _max_allowed_active_seconds(seg_st, seg_et)
+                locked_val = min(remaining, max(0, min(locked_prior_day_seconds[d], cap)))
+                allocated[d] = locked_val
+                remaining -= locked_val
+
+        unallocated_segs = [seg for seg in raw_segments if seg[0] not in allocated]
+        if unallocated_segs and remaining > 0:
+            unalloc_total_elapsed = sum(seg[3] for seg in unallocated_segs)
+            cum_elapsed = 0.0
+            prev_alloc = 0
+            for d, seg_st, seg_et, seg_elapsed in unallocated_segs:
+                cum_elapsed += seg_elapsed
+                target_cum = round(remaining * cum_elapsed / unalloc_total_elapsed)
+                seg_alloc = target_cum - prev_alloc
+                prev_alloc = target_cum
+                cap = _max_allowed_active_seconds(seg_st, seg_et)
+                allocated[d] = min(seg_alloc, cap)
+            leftover = remaining - sum(allocated.get(seg[0], 0) for seg in unallocated_segs)
+            if leftover > 0:
+                for d, seg_st, seg_et, _ in reversed(raw_segments):
+                    cap = _max_allowed_active_seconds(seg_st, seg_et)
+                    cur_val = allocated.get(d, 0)
+                    add_val = min(leftover, max(0, cap - cur_val))
+                    allocated[d] = cur_val + add_val
+                    leftover -= add_val
+                    if leftover <= 0:
+                        break
+        else:
+            for d, _, _, _ in unallocated_segs:
+                allocated[d] = 0
+            if remaining > 0:
+                for d, seg_st, seg_et, _ in reversed(raw_segments):
+                    cap = _max_allowed_active_seconds(seg_st, seg_et)
+                    cur_val = allocated.get(d, 0)
+                    add_val = min(remaining, max(0, cap - cur_val))
+                    allocated[d] = cur_val + add_val
+                    remaining -= add_val
+                    if remaining <= 0:
+                        break
+
+        return [(d, seg_st, seg_et, allocated.get(d, 0)) for d, seg_st, seg_et, _ in raw_segments]
+
+    total_elapsed = sum(seg[3] for seg in raw_segments)
+    result: list[tuple[date, datetime, datetime, int]] = []
+    cum_elapsed = 0.0
+    prev_allocated = 0
+    for d, seg_st, seg_et, seg_elapsed in raw_segments:
+        cum_elapsed += seg_elapsed
+        target_cum = round(act_sec * cum_elapsed / total_elapsed)
+        seg_act = target_cum - prev_allocated
+        prev_allocated = target_cum
+        result.append((d, seg_st, seg_et, seg_act))
+    return result
+
+
+def _compute_deduplicated_active_seconds(
+    sessions: list[StudyActivitySession],
+    *,
+    study_date: date | None = None,
+    session_day_overrides: dict[tuple[int, date], int] | None = None,
+) -> int:
     """동일 날짜 학습 활동 세션에서 동시(중복) 시간 구간을 제외하고 인정 학습 시간을 합산한다."""
     if not sessions:
         return 0
@@ -1103,7 +1227,26 @@ def _compute_deduplicated_active_seconds(sessions: list[StudyActivitySession]) -
         st = _ensure_seoul_aware(s.started_at)
         et = _ensure_seoul_aware(s.ended_at)
         act_sec = max(0, int(s.active_seconds or 0))
-        normalized.append((st, et, act_sec))
+
+        if study_date is not None:
+            slices = _split_session_into_daily_slices(st, et, act_sec)
+            matched = next((sl for sl in slices if sl[0] == study_date), None)
+            if matched is None:
+                if s.study_date == study_date and st.date() == et.date():
+                    seg_st, seg_et, seg_act = st, et, act_sec
+                else:
+                    continue
+            else:
+                _, seg_st, seg_et, seg_act = matched
+
+            if session_day_overrides is not None and (s.id, study_date) in session_day_overrides:
+                seg_act = session_day_overrides[(s.id, study_date)]
+            normalized.append((seg_st, seg_et, seg_act))
+        else:
+            normalized.append((st, et, act_sec))
+
+    if not normalized:
+        return 0
 
     normalized.sort(key=lambda x: (x[0], x[1]))
 
@@ -1127,7 +1270,7 @@ def _compute_deduplicated_active_seconds(sessions: list[StudyActivitySession]) -
         if c_cnt == 1:
             total += c_sum
         else:
-            window_seconds = max(0, int((c_et - c_st).total_seconds()))
+            window_seconds = _max_allowed_active_seconds(c_st, c_et)
             total += min(c_sum, max(c_max, window_seconds))
     return total
 
@@ -1135,16 +1278,51 @@ def _compute_deduplicated_active_seconds(sessions: list[StudyActivitySession]) -
 def _get_learner_day_sessions(
     db: Session, learner_id: int, study_date: date
 ) -> list[StudyActivitySession]:
+    day_start, day_end = _get_day_bounds(study_date)
     return list(
         db.scalars(
             select(StudyActivitySession)
             .join(Enrollment, Enrollment.id == StudyActivitySession.enrollment_id)
             .where(
                 Enrollment.learner_id == learner_id,
-                StudyActivitySession.study_date == study_date,
+                or_(
+                    StudyActivitySession.study_date == study_date,
+                    and_(
+                        StudyActivitySession.started_at < day_end,
+                        StudyActivitySession.ended_at > day_start,
+                    ),
+                ),
             )
         ).all()
     )
+
+
+def _recalculate_single_enrollment_progress(
+    enrollment: Enrollment,
+    *,
+    total_items_count: int,
+    completed_video_ids: set[int],
+    submitted_quiz_ids: set[int],
+    unresolved_wrong_count: int,
+    now: datetime,
+) -> None:
+    """개인 진도 저장 시 해당 enrollment 단건의 수료 상태만 재계산한다."""
+    if total_items_count <= 0:
+        return
+
+    completed_items = len(completed_video_ids) + len(submitted_quiz_ids)
+    is_fully_completed = (completed_items >= total_items_count) and (unresolved_wrong_count == 0)
+
+    if not is_fully_completed:
+        if enrollment.status == "COMPLETED":
+            enrollment.status = "IN_PROGRESS"
+            enrollment.current_completed_at = None
+    else:
+        if enrollment.status == "IN_PROGRESS":
+            enrollment.status = "COMPLETED"
+            enrollment.current_completed_at = now
+            if enrollment.first_completed_at is None:
+                enrollment.first_completed_at = now
 
 
 def save_video_progress(
@@ -1157,10 +1335,9 @@ def save_video_progress(
     if video.video_type != "LESSON":
         raise AppError(400, "VALIDATION_ERROR", VIDEO_PROGRESS_VALIDATION_MESSAGE)
 
-    if video.section_id is not None:
-        section = db.get(Section, video.section_id)
-        if section is None or not section.is_active:
-            raise AppError(404, "NOT_FOUND", VIDEO_NOT_FOUND_MESSAGE)
+    section = db.get(Section, video.section_id) if video.section_id is not None else None
+    if section is None or not section.is_active:
+        raise AppError(404, "NOT_FOUND", VIDEO_NOT_FOUND_MESSAGE)
 
     # 동일 수강자의 동시 요청 직렬화를 위해 User 및 Enrollment 행 잠금
     db.get(User, current_user.id, with_for_update=True)
@@ -1175,6 +1352,67 @@ def save_video_progress(
     if enrollment is None:
         raise AppError(403, "FORBIDDEN", VIDEO_PROGRESS_FORBIDDEN_MESSAGE)
 
+    course = _load_course_with_curriculum(db, video.course_id)
+    if course is None:
+        raise AppError(404, "NOT_FOUND", VIDEO_NOT_FOUND_MESSAGE)
+
+    is_owner = _is_course_owner(current_user, course)
+    is_op = _is_operator(current_user)
+
+    if course.status != "PUBLISHED":
+        can_access_course = (
+            is_owner
+            or is_op
+            or (course.status in ("EDITING", "OPERATOR_HIDDEN") and enrollment is not None)
+        )
+        if not can_access_course:
+            raise AppError(403, "FORBIDDEN", VIDEO_LOCKED_MESSAGE)
+
+    active_sections, section_lessons, section_unit_quizzes, final_quiz, _ = (
+        _extract_active_curriculum(course)
+    )
+    all_lessons = [v for s in active_sections for v in section_lessons.get(s.id, [])]
+    all_quizzes = [q for s in active_sections if (q := section_unit_quizzes.get(s.id)) is not None]
+    if final_quiz is not None:
+        all_quizzes.append(final_quiz)
+
+    active_lesson_ids = {v.id for v in all_lessons}
+    active_quiz_ids = {q.id for q in all_quizzes}
+    active_question_ids = {
+        quest.id
+        for q in all_quizzes
+        for quest in q.questions
+        if quest.is_active and quest.order_no > 0
+    }
+
+    _, completed_video_ids, submitted_quiz_ids, unresolved_wrong_count = (
+        _get_enrollment_progress_data(
+            db, enrollment.id, active_lesson_ids, active_quiz_ids, active_question_ids
+        )
+    )
+
+    unlock_all = (
+        is_owner
+        or is_op
+        or enrollment.first_completed_at is not None
+        or enrollment.status == "COMPLETED"
+    )
+    curriculum_items = _compute_curriculum_items(
+        active_sections,
+        section_lessons,
+        section_unit_quizzes,
+        final_quiz,
+        completed_video_ids,
+        submitted_quiz_ids,
+        is_enrolled=True,
+        unlock_all=unlock_all,
+    )
+    item_map = {(ci.item_type, ci.item_id): ci for ci in curriculum_items}
+    if not (is_owner or is_op):
+        ci_self = item_map.get(("VIDEO", video.id))
+        if ci_self is None or ci_self.is_locked:
+            raise AppError(403, "FORBIDDEN", VIDEO_LOCKED_MESSAGE)
+
     duration = video.duration_seconds
     if body.last_position_seconds < 0 or body.last_position_seconds > duration:
         raise AppError(400, "VALIDATION_ERROR", VIDEO_PROGRESS_VALIDATION_MESSAGE)
@@ -1186,6 +1424,7 @@ def save_video_progress(
     if range_start < 0 or range_end <= range_start or range_end > duration:
         raise AppError(400, "VALIDATION_ERROR", VIDEO_PROGRESS_VALIDATION_MESSAGE)
 
+    now = datetime.now(SEOUL_TZ)
     act = body.activity_session
     session_key = act.session_key.strip() if act.session_key else ""
     started_at = _ensure_seoul_aware(act.started_at)
@@ -1193,7 +1432,34 @@ def save_video_progress(
     if not session_key or len(session_key) > 64 or act.active_seconds < 0 or ended_at < started_at:
         raise AppError(400, "VALIDATION_ERROR", VIDEO_PROGRESS_VALIDATION_MESSAGE)
 
-    now = datetime.now(SEOUL_TZ)
+    max_allowed_time = now + timedelta(seconds=MAX_FUTURE_SKEW_SECONDS)
+    if started_at > max_allowed_time or ended_at > max_allowed_time:
+        raise AppError(400, "VALIDATION_ERROR", VIDEO_PROGRESS_VALIDATION_MESSAGE)
+
+    if act.active_seconds > _max_allowed_active_seconds(started_at, ended_at):
+        raise AppError(400, "VALIDATION_ERROR", VIDEO_PROGRESS_VALIDATION_MESSAGE)
+
+    existing_session = db.scalar(
+        select(StudyActivitySession)
+        .where(StudyActivitySession.session_key == session_key)
+        .with_for_update()
+    )
+    if existing_session is not None:
+        if (
+            existing_session.enrollment_id != enrollment.id
+            or existing_session.activity_type != "VIDEO"
+            or existing_session.video_id != video.id
+        ):
+            raise AppError(400, "VALIDATION_ERROR", VIDEO_PROGRESS_VALIDATION_MESSAGE)
+
+        existing_started = _ensure_seoul_aware(existing_session.started_at)
+        existing_ended = _ensure_seoul_aware(existing_session.ended_at)
+        eff_ended = max(ended_at, existing_ended)
+        if eff_ended < existing_started:
+            raise AppError(400, "VALIDATION_ERROR", VIDEO_PROGRESS_VALIDATION_MESSAGE)
+        if act.active_seconds > _max_allowed_active_seconds(existing_started, eff_ended):
+            raise AppError(400, "VALIDATION_ERROR", VIDEO_PROGRESS_VALIDATION_MESSAGE)
+
     db.execute(
         insert(VideoProgress)
         .values(
@@ -1235,12 +1501,18 @@ def save_video_progress(
     db.flush()
 
     if newly_completed:
-        course = _load_course_with_curriculum(db, video.course_id)
-        if course is not None:
-            recalculate_enrollments_progress(course, db)
+        completed_video_ids.add(video.id)
+        total_items_count = len(active_lesson_ids) + len(active_quiz_ids)
+        _recalculate_single_enrollment_progress(
+            enrollment,
+            total_items_count=total_items_count,
+            completed_video_ids=completed_video_ids,
+            submitted_quiz_ids=submitted_quiz_ids,
+            unresolved_wrong_count=unresolved_wrong_count,
+            now=now,
+        )
 
-    # 학습 활동 세션(study_activity_sessions) 및 당일 출석(attendance_days) 갱신
-    study_date = today_in_seoul()
+    # 학습 활동 세션(study_activity_sessions) 및 날짜별 출석(attendance_days) 갱신
     goal = db.get(LearningGoal, current_user.id)
     target_minutes = (
         goal.daily_target_minutes
@@ -1248,88 +1520,140 @@ def save_video_progress(
         else DEFAULT_DAILY_GOAL_MINUTES
     )
 
-    prev_sessions = _get_learner_day_sessions(db, current_user.id, study_date)
-    prev_sessions_seconds = _compute_deduplicated_active_seconds(prev_sessions)
-
-    attendance = db.get(
-        AttendanceDay,
-        (current_user.id, study_date),
-        with_for_update=True,
-        populate_existing=True,
-    )
-    base_untracked_seconds = (
-        max(0, (attendance.active_seconds or 0) - prev_sessions_seconds)
-        if attendance is not None
-        else 0
-    )
-
-    existing_session = db.scalar(
-        select(StudyActivitySession)
-        .where(StudyActivitySession.session_key == session_key)
-        .with_for_update()
-    )
     if existing_session is None:
-        db.add(
-            StudyActivitySession(
-                enrollment_id=enrollment.id,
-                activity_type="VIDEO",
-                video_id=video.id,
-                quiz_attempt_id=None,
-                session_key=session_key,
-                study_date=study_date,
-                started_at=started_at,
-                ended_at=ended_at,
-                active_seconds=act.active_seconds,
-            )
+        target_slices = _split_session_into_daily_slices(started_at, ended_at, act.active_seconds)
+        affected_dates = sorted({d for d, _, _, _ in target_slices})
+    else:
+        existing_started = _ensure_seoul_aware(existing_session.started_at)
+        existing_ended = _ensure_seoul_aware(existing_session.ended_at)
+        eff_ended = max(ended_at, existing_ended)
+        eff_active = max(act.active_seconds, existing_session.active_seconds)
+        prev_slices = _split_session_into_daily_slices(
+            existing_started, existing_ended, existing_session.active_seconds
         )
+        prelim_new_slices = _split_session_into_daily_slices(
+            existing_started, eff_ended, eff_active
+        )
+        affected_dates = sorted(
+            {d for d, _, _, _ in prev_slices} | {d for d, _, _, _ in prelim_new_slices}
+        )
+
+    if not affected_dates:
+        affected_dates = [today_in_seoul()]
+
+    attendances_map: dict[date, AttendanceDay | None] = {}
+    base_untracked_map: dict[date, int] = {}
+    locked_prior_day_seconds: dict[date, int] = {}
+    last_affected_date = affected_dates[-1]
+
+    for d in affected_dates:
+        prev_day_sessions = _get_learner_day_sessions(db, current_user.id, d)
+        prev_day_seconds = _compute_deduplicated_active_seconds(prev_day_sessions, study_date=d)
+        att_d = db.get(
+            AttendanceDay,
+            (current_user.id, d),
+            with_for_update=True,
+            populate_existing=True,
+        )
+        attendances_map[d] = att_d
+
+        if existing_session is not None and d < last_affected_date and att_d is not None:
+            other_sessions = [s for s in prev_day_sessions if s.id != existing_session.id]
+            other_seconds = _compute_deduplicated_active_seconds(other_sessions, study_date=d)
+            prior_contrib = min(
+                existing_session.active_seconds,
+                max(0, (att_d.active_seconds or 0) - other_seconds),
+            )
+            locked_prior_day_seconds[d] = prior_contrib
+            prev_overrides = {(existing_session.id, d): prior_contrib}
+            prev_day_seconds_with_lock = _compute_deduplicated_active_seconds(
+                prev_day_sessions, study_date=d, session_day_overrides=prev_overrides
+            )
+            base_untracked_map[d] = max(0, (att_d.active_seconds or 0) - prev_day_seconds_with_lock)
+        else:
+            base_untracked_map[d] = (
+                max(0, (att_d.active_seconds or 0) - prev_day_seconds) if att_d is not None else 0
+            )
+
+    session_day_overrides: dict[tuple[int, date], int] = {}
+    if existing_session is None:
+        new_session = StudyActivitySession(
+            enrollment_id=enrollment.id,
+            activity_type="VIDEO",
+            video_id=video.id,
+            quiz_attempt_id=None,
+            session_key=session_key,
+            study_date=affected_dates[0],
+            started_at=started_at,
+            ended_at=ended_at,
+            active_seconds=act.active_seconds,
+        )
+        db.add(new_session)
         db.flush()
     else:
-        if existing_session.enrollment_id != enrollment.id:
-            raise AppError(400, "VALIDATION_ERROR", VIDEO_PROGRESS_VALIDATION_MESSAGE)
+        existing_started = _ensure_seoul_aware(existing_session.started_at)
+        existing_ended = _ensure_seoul_aware(existing_session.ended_at)
         if act.active_seconds > existing_session.active_seconds:
             existing_session.active_seconds = act.active_seconds
-        existing_ended = _ensure_seoul_aware(existing_session.ended_at)
         if ended_at > existing_ended:
             existing_session.ended_at = ended_at
         db.flush()
 
-    updated_sessions = _get_learner_day_sessions(db, current_user.id, study_date)
-    new_sessions_seconds = _compute_deduplicated_active_seconds(updated_sessions)
-    total_active_seconds = base_untracked_seconds + new_sessions_seconds
+        eff_ended = _ensure_seoul_aware(existing_session.ended_at)
+        final_slices = _split_session_into_daily_slices(
+            existing_started,
+            eff_ended,
+            existing_session.active_seconds,
+            locked_prior_day_seconds=locked_prior_day_seconds or None,
+        )
+        for d, _, _, seg_act in final_slices:
+            session_day_overrides[(existing_session.id, d)] = seg_act
 
-    if attendance is None:
-        db.execute(
-            insert(AttendanceDay)
-            .values(
-                learner_id=current_user.id,
-                study_date=study_date,
-                target_minutes_snapshot=target_minutes,
-                active_seconds=total_active_seconds,
-                is_attended=(total_active_seconds >= target_minutes * 60),
+    for d in affected_dates:
+        updated_day_sessions = _get_learner_day_sessions(db, current_user.id, d)
+        new_day_seconds = _compute_deduplicated_active_seconds(
+            updated_day_sessions,
+            study_date=d,
+            session_day_overrides=session_day_overrides or None,
+        )
+        total_d_seconds = base_untracked_map[d] + new_day_seconds
+        att_d = attendances_map[d]
+
+        if att_d is None:
+            db.execute(
+                insert(AttendanceDay)
+                .values(
+                    learner_id=current_user.id,
+                    study_date=d,
+                    target_minutes_snapshot=target_minutes,
+                    active_seconds=total_d_seconds,
+                    is_attended=(total_d_seconds >= target_minutes * 60),
+                )
+                .on_conflict_do_update(
+                    index_elements=["learner_id", "study_date"],
+                    set_={
+                        "active_seconds": total_d_seconds,
+                        "is_attended": (total_d_seconds >= target_minutes * 60),
+                    },
+                )
             )
-            .on_conflict_do_update(
-                index_elements=["learner_id", "study_date"],
-                set_={
-                    "active_seconds": total_active_seconds,
-                    "is_attended": (total_active_seconds >= target_minutes * 60),
-                },
+            att_d = db.get(
+                AttendanceDay,
+                (current_user.id, d),
+                populate_existing=True,
             )
-        )
-        attendance = db.get(
-            AttendanceDay,
-            (current_user.id, study_date),
-            populate_existing=True,
-        )
-        assert attendance is not None
-    else:
-        attendance.active_seconds = total_active_seconds
-        attendance.is_attended = (
-            attendance.active_seconds >= attendance.target_minutes_snapshot * 60
-        )
+            assert att_d is not None
+            attendances_map[d] = att_d
+        else:
+            att_d.active_seconds = total_d_seconds
+            att_d.is_attended = att_d.active_seconds >= att_d.target_minutes_snapshot * 60
+
+    response_attendance = attendances_map[last_affected_date]
+    assert response_attendance is not None
 
     db.commit()
     db.refresh(vp)
-    db.refresh(attendance)
+    db.refresh(response_attendance)
 
     return VideoProgressResponse(
         enrollment_id=enrollment.id,
@@ -1341,8 +1665,8 @@ def save_video_progress(
         is_completed=vp.is_completed,
         completed_at=vp.completed_at,
         remaining_seconds_for_completion=remaining_for_completion,
-        today_active_seconds=attendance.active_seconds,
-        today_is_attended=attendance.is_attended,
+        today_active_seconds=response_attendance.active_seconds,
+        today_is_attended=response_attendance.is_attended,
     )
 
 
