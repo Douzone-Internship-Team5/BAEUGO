@@ -4,7 +4,16 @@ from alembic.autogenerate import compare_metadata
 from alembic.migration import MigrationContext
 from app.core.security import verify_password
 from app.models import Base, Category, LearningGoal, Topic, User, UserRole
-from app.seed import SEED_ACCOUNTS, SEED_PASSWORD, TOPIC_NAMES, seed
+from app.seed import (
+    PROFILE_PRESET_SOURCE_DIR,
+    SEED_ACCOUNTS,
+    SEED_PASSWORD,
+    TOPIC_NAMES,
+    seed,
+    seed_profile_presets,
+)
+
+PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
 
 
 def count_rows(db, model) -> int:
@@ -120,3 +129,49 @@ def test_seed_adds_missing_learning_goal_to_existing_account(db):
     seed(db)
 
     assert db.get(LearningGoal, learner.id).daily_target_minutes == 20
+
+
+def test_preset_source_images_are_small_png():
+    for preset_id in (1, 2, 3, 4):
+        content = (PROFILE_PRESET_SOURCE_DIR / f"{preset_id}.png").read_bytes()
+        assert content.startswith(PNG_SIGNATURE)
+        assert len(content) < 50 * 1024
+
+
+def test_seed_copies_profile_presets(tmp_path):
+    copied = seed_profile_presets(tmp_path)
+
+    assert copied == 4
+    for preset_id in (1, 2, 3, 4):
+        target = tmp_path / "profiles" / "presets" / f"{preset_id}.png"
+        source = PROFILE_PRESET_SOURCE_DIR / f"{preset_id}.png"
+        assert target.read_bytes() == source.read_bytes()
+
+
+def test_seed_profile_presets_twice_keeps_existing_files(tmp_path):
+    seed_profile_presets(tmp_path)
+    replaced = tmp_path / "profiles" / "presets" / "2.png"
+    replaced.write_bytes(b"design image")
+
+    copied = seed_profile_presets(tmp_path)
+
+    assert copied == 0
+    assert replaced.read_bytes() == b"design image"
+
+
+def test_seed_function_does_not_touch_media(db, monkeypatch):
+    # conftest가 seed()를 부르므로, 여기서 파일을 쓰면 개발 media_data에 테스트 파일이 남는다.
+    def fail():
+        raise AssertionError("seed()가 미디어 폴더에 접근했습니다.")
+
+    monkeypatch.setattr("app.seed.get_media_dir", fail)
+
+    seed(db)
+
+
+def test_seed_profile_presets_fills_only_missing_files(tmp_path):
+    seed_profile_presets(tmp_path)
+    (tmp_path / "profiles" / "presets" / "3.png").unlink()
+
+    assert seed_profile_presets(tmp_path) == 1
+    assert (tmp_path / "profiles" / "presets" / "3.png").exists()

@@ -6,10 +6,15 @@
   목록에서 빠진 행은 지우지 않는다.
 - 목업 계정: 없는 계정만 넣고, 이미 있는 계정은 건드리지 않는다.
 - 학습 목표: 계정이 이미 있어도 목표가 없으면 넣는다 (기존 DB의 learner2에도 들어가도록).
+- 프로필 프리셋 이미지: seed_assets/profile_presets/{번호}.png를 media_data의
+  profiles/presets/{번호}.png로 복사한다. 이미 있는 파일은 덮어쓰지 않는다.
+  이미지를 바꿀 때는 seed_assets의 파일만 교체하고, media_data의 기존 파일을 지운 뒤 다시 실행한다.
 """
 
 import logging
+import shutil
 from dataclasses import dataclass, field
+from pathlib import Path
 
 from sqlalchemy import func, select, text
 from sqlalchemy.dialects.postgresql import insert
@@ -30,10 +35,13 @@ from app.models import (
     User,
     UserRole,
 )
+from app.services.profile_image import PROFILE_PRESET_IDS, preset_key
+from app.services.storage import get_media_dir
 
 logger = logging.getLogger(__name__)
 
 SEED_PASSWORD = "baeugo1234"
+PROFILE_PRESET_SOURCE_DIR = Path(__file__).parent / "seed_assets" / "profile_presets"
 
 # (id, code, name). id는 sort_order와 같고, 명세 예시(/codes)의 id와 맞춘다.
 CATEGORIES = [
@@ -219,13 +227,34 @@ def seed(db: Session) -> None:
     db.commit()
 
 
+def seed_profile_presets(media_dir: Path) -> int:
+    """복사한 파일 수를 돌려준다."""
+    copied = 0
+    for preset_id in PROFILE_PRESET_IDS:
+        target = media_dir / preset_key(preset_id)
+        if target.exists():
+            continue
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(PROFILE_PRESET_SOURCE_DIR / f"{preset_id}.png", target)
+        copied += 1
+    return copied
+
+
 def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(message)s")
     with SessionLocal() as db:
         seed(db)
         user_count = db.scalar(select(func.count()).select_from(User))
         topic_count = db.scalar(select(func.count()).select_from(Topic))
-    logger.info("시드 완료: 사용자 %d명, 주제 %d개", user_count, topic_count)
+    # 테스트(conftest)는 seed()만 부른다. 그래서 파일 복사를 여기서 해야
+    # 테스트가 개발 media_data에 파일을 남기지 않는다.
+    preset_count = seed_profile_presets(get_media_dir())
+    logger.info(
+        "시드 완료: 사용자 %d명, 주제 %d개, 프로필 프리셋 %d개 복사",
+        user_count,
+        topic_count,
+        preset_count,
+    )
 
 
 if __name__ == "__main__":
