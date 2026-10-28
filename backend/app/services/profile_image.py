@@ -1,5 +1,80 @@
+import os
+from pathlib import Path
+
+from sqlalchemy.orm import Session
+from starlette.datastructures import UploadFile
+
+from app.core.errors import AppError
+from app.models.user import User
+from app.schemas.user import ProfileImageResponse
+from app.services.storage import get_profile_image_url, save_upload_file
+
 PROFILE_PRESET_IDS = (1, 2, 3, 4)
+MAX_PROFILE_IMAGE_SIZE = 5 * 1024 * 1024
+# 확장자만 바꾼 파일을 막으려고 파일 앞부분(매직 바이트)도 확인한다.
+IMAGE_SIGNATURES = {
+    ".jpg": b"\xff\xd8\xff",
+    ".png": b"\x89PNG\r\n\x1a\n",
+}
+
+INVALID_FILE_MESSAGE = "jpg, png 형식의 5MB 이하 이미지만 업로드할 수 있습니다."
+PRESET_NOT_FOUND_MESSAGE = "존재하지 않는 프리셋 번호입니다."
+CHOICE_MESSAGE = "presetId 또는 file 중 하나만 보내 주세요."
 
 
 def preset_key(preset_id: int) -> str:
     return f"profiles/presets/{preset_id}.png"
+
+
+def update_profile_image(
+    db: Session, user: User, preset_id: object, file: object
+) -> ProfileImageResponse:
+    """preset_id는 JSON 본문, file은 multipart 본문에서 꺼낸 값이다(없으면 None)."""
+    if (preset_id is None) == (file is None):
+        raise AppError(400, "VALIDATION_ERROR", CHOICE_MESSAGE)
+    if file is not None:
+        if not isinstance(file, UploadFile):
+            raise AppError(400, "INVALID_FILE", INVALID_FILE_MESSAGE)
+        return upload_profile_image(db, user, file)
+    # JSON의 true/false도 파이썬에서는 int로 취급되므로 따로 막는다.
+    if isinstance(preset_id, bool) or not isinstance(preset_id, int):
+        raise AppError(
+            400,
+            "VALIDATION_ERROR",
+            "입력값을 확인해 주세요.",
+            fields={"presetId": "정수여야 합니다."},
+        )
+    return set_preset_image(db, user, preset_id)
+
+
+def set_preset_image(db: Session, user: User, preset_id: int) -> ProfileImageResponse:
+    if preset_id not in PROFILE_PRESET_IDS:
+        raise AppError(404, "NOT_FOUND", PRESET_NOT_FOUND_MESSAGE)
+    return save_profile_image_key(db, user, preset_key(preset_id))
+
+
+def upload_profile_image(db: Session, user: User, file: UploadFile) -> ProfileImageResponse:
+    validate_image_file(file)
+    # 매번 다른 키로 저장해서 브라우저가 예전 사진을 캐시로 보여주지 않게 한다.
+    key = save_upload_file(file, "profiles", f"user_{user.id}")
+    return save_profile_image_key(db, user, key)
+
+
+def validate_image_file(file: UploadFile) -> None:
+    signature = IMAGE_SIGNATURES.get(Path(file.filename or "").suffix.lower())
+    if signature is None:
+        raise AppError(400, "INVALID_FILE", INVALID_FILE_MESSAGE)
+
+    file.file.seek(0, os.SEEK_END)
+    size = file.file.tell()
+    file.file.seek(0)
+    head = file.file.read(len(signature))
+    file.file.seek(0)
+    if not 0 < size <= MAX_PROFILE_IMAGE_SIZE or head != signature:
+        raise AppError(400, "INVALID_FILE", INVALID_FILE_MESSAGE)
+
+
+def save_profile_image_key(db: Session, user: User, key: str) -> ProfileImageResponse:
+    user.profile_image_key = key
+    db.commit()
+    return ProfileImageResponse(profile_image_key=key, profile_image_url=get_profile_image_url(key))

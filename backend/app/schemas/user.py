@@ -106,3 +106,8 @@ class DemoLabelRequest(CamelModel):
 
 class DemoLabelResponse(CamelModel):
     label: str | None
+
+
+class ProfileImageResponse(CamelModel):
+    profile_image_key: str
+    profile_image_url: str | None
