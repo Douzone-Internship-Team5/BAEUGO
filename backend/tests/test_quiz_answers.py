@@ -16,17 +16,17 @@ from app.models import (
     StudyActivitySession,
     UserRole,
 )
-from app.services import goals, learner_quiz, learning
+from app.services import admin_users, course_service, goals, learner_quiz, learning
 from tests.conftest import auth_header
-from tests.factories import enroll
+from tests.factories import enroll, make_video
 from tests.test_learner_quiz import build_course, complete_video
 
 
-def freeze_clock(monkeypatch):
+def freeze_clock(monkeypatch, at="2026-10-27T12:00:00+09:00"):
     class FixedDatetime(datetime):
         @classmethod
         def now(cls, tz=None):
-            value = datetime(2026, 10, 27, 12, tzinfo=SEOUL_TZ)
+            value = datetime.fromisoformat(at)
             return value.astimezone(tz) if tz is not None else value.replace(tzinfo=None)
 
     for module in (learner_quiz, learning, goals):
@@ -127,6 +127,48 @@ def test_q2_contract_cumulative_activity_duplicate_and_stats(client, db, get_use
     assert db.scalar(select(func.count()).select_from(QuestionAnswer)) == 2
 
 
+@pytest.mark.parametrize("activity_type", ["VIDEO", "QUIZ"])
+def test_old_session_cannot_be_reused_with_today_timestamps(
+    client, db, get_user, monkeypatch, activity_type
+):
+    freeze_clock(monkeypatch)
+    learner, _, _, video, unit, _, enrollment, attempt = prepare_attempt(db, get_user)
+    started = datetime(2026, 10, 21, 10, tzinfo=SEOUL_TZ)
+    db.add(
+        StudyActivitySession(
+            enrollment_id=enrollment.id,
+            activity_type=activity_type,
+            video_id=video.id if activity_type == "VIDEO" else None,
+            quiz_attempt_id=attempt.attempt_id if activity_type == "QUIZ" else None,
+            session_key="old-session",
+            study_date=started.date(),
+            started_at=started,
+            ended_at=started + timedelta(seconds=60),
+            active_seconds=60,
+        )
+    )
+    db.commit()
+    body = answer_body(attempt, activity={"sessionKey": "old-session"})
+    if activity_type == "QUIZ":
+        response = post_answer(client, learner, unit.id, body)
+    else:
+        response = client.put(
+            f"/api/v1/videos/{video.id}/progress",
+            headers=auth_header(learner.id),
+            json={
+                "lastPositionSeconds": 60,
+                "watchedRange": [0, 60],
+                "activitySession": body["activitySession"],
+            },
+        )
+    assert response.status_code == 400
+    assert db.scalar(select(func.count()).select_from(AttendanceDay)) == 0
+    assert db.scalar(select(func.count()).select_from(QuestionAnswer)) == 0
+    session = db.scalar(select(StudyActivitySession))
+    assert session.active_seconds == 60
+    assert session.study_date == started.date()
+
+
 def test_q2_auth_ownership_and_question_membership(client, db, get_user):
     learner, _, _, _, unit, final, _, attempt = prepare_attempt(db, get_user)
     path = f"/api/v1/quizzes/{unit.id}/answers"
@@ -162,6 +204,9 @@ def test_q2_auth_ownership_and_question_membership(client, db, get_user):
         "reversed_time",
         "excess_seconds",
         "future_time",
+        "yesterday",
+        "six_days_ago",
+        "old_start_today_end",
     ],
 )
 def test_q2_invalid_input_does_not_persist_partial_results(
@@ -187,11 +232,19 @@ def test_q2_invalid_input_does_not_persist_partial_results(
         activity["endedAt"] = "2026-10-27T10:00:00+09:00"
     elif invalid_case == "excess_seconds":
         activity["activeSeconds"] = 1200
-    else:
+    elif invalid_case == "future_time":
         activity.update(startedAt="2026-10-27T13:00:00+09:00", endedAt="2026-10-27T13:01:00+09:00")
+    elif invalid_case == "yesterday":
+        activity.update(startedAt="2026-10-26T10:00:00+09:00", endedAt="2026-10-26T10:01:00+09:00")
+    elif invalid_case == "six_days_ago":
+        activity.update(startedAt="2026-10-21T10:00:00+09:00", endedAt="2026-10-21T10:01:00+09:00")
+    else:
+        activity["startedAt"] = "2026-10-21T10:00:00+09:00"
     response = post_answer(client, learner, unit.id, body)
     assert response.status_code == 400
     assert response.json()["error"]["code"] == "VALIDATION_ERROR"
+    if invalid_case in ("choice_zero", "choice_five"):
+        assert response.json()["error"]["message"] == "선택한 보기 번호는 1~4 사이여야 합니다."
     for model in (
         QuestionAnswer,
         QuestionRecord,
@@ -353,7 +406,7 @@ def test_q2_and_c7_share_overlap_deduplication_and_goals(client, db, get_user, m
 def test_q2_midnight_cumulative_activity_and_duplicate_submission(
     client, db, get_user, monkeypatch
 ):
-    freeze_clock(monkeypatch)
+    freeze_clock(monkeypatch, "2026-10-26T23:59:00+09:00")
     learner, _, _, _, unit, _, _, attempt = prepare_attempt(db, get_user, question_count=3)
     activity = {
         "sessionKey": "midnight-quiz",
@@ -363,6 +416,7 @@ def test_q2_midnight_cumulative_activity_and_duplicate_submission(
     }
     response = post_answer(client, learner, unit.id, answer_body(attempt, activity=activity))
     assert response.status_code == 200
+    freeze_clock(monkeypatch)
     activity.update(endedAt="2026-10-27T00:01:00+09:00", activeSeconds=90)
     for index in (1, 2):
         body = answer_body(attempt, index, activity=activity)
@@ -372,3 +426,92 @@ def test_q2_midnight_cumulative_activity_and_duplicate_submission(
     current = db.get(AttendanceDay, (learner.id, date(2026, 10, 27)), populate_existing=True)
     assert (previous.active_seconds, current.active_seconds) == (60, 30)
     assert db.scalar(select(func.count()).select_from(StudyActivitySession)) == 1
+
+
+def test_completed_course_retake_keeps_completion_and_updates_wrong_notes(
+    client, db, get_user, monkeypatch
+):
+    freeze_clock(monkeypatch)
+    learner, course, section, video, unit, final, enrollment, attempt = prepare_attempt(
+        db, get_user, question_count=1
+    )
+    headers = auth_header(learner.id)
+    assert post_answer(client, learner, unit.id, answer_body(attempt)).status_code == 200
+    final_attempt = learner_quiz.get_course_attempt(db, learner.id, course.id, "FINAL", None)
+    assert post_answer(client, learner, final.id, answer_body(final_attempt)).status_code == 200
+    db.refresh(enrollment)
+    first_at, current_at = enrollment.first_completed_at, enrollment.current_completed_at
+
+    retake = learner_quiz.get_course_attempt(db, learner.id, course.id, "FINAL", None)
+    assert retake.attempt_no == 2
+    wrong = post_answer(client, learner, final.id, answer_body(retake, choice=2))
+    assert wrong.status_code == 200
+    assert wrong.json()["data"]["isCourseCompleted"]
+    assert wrong.json()["data"]["questionRecordStatus"] == "REVIEW_NEEDED"
+    completion = client.get(f"/api/v1/courses/{course.id}/completion", headers=headers)
+    assert completion.json()["data"]["isCompleted"]
+    assert completion.json()["data"]["unresolvedWrongCount"] == 1
+    notes = client.get("/api/v1/me/quiz-notes?status=REVIEW_NEEDED", headers=headers)
+    assert notes.json()["data"]["counts"]["reviewNeeded"] == 1
+    listed = client.get("/api/v1/me/enrollments?status=COMPLETED", headers=headers)
+    assert listed.json()["data"]["enrollments"][0]["courseId"] == course.id
+    assert admin_users.build_learning_summary(db, learner).completed_count == 1
+
+    response = client.put(
+        f"/api/v1/videos/{video.id}/progress",
+        headers=headers,
+        json={
+            "lastPositionSeconds": 60,
+            "watchedRange": [0, 60],
+            "activitySession": answer_body(retake, activity={"sessionKey": "replay"})[
+                "activitySession"
+            ],
+        },
+    )
+    assert response.status_code == 200
+    course_service.recalculate_enrollments_progress(course, db)
+    db.commit()
+    db.refresh(enrollment)
+    assert enrollment.status == "COMPLETED"
+    assert enrollment.first_completed_at == first_at
+    assert enrollment.current_completed_at == current_at
+    stat = db.get(CourseDailyStat, (course.id, date(2026, 10, 27)), populate_existing=True)
+    assert (stat.first_answer_cnt, stat.first_correct_cnt, stat.first_submitted_cnt) == (2, 2, 2)
+
+    # 새 학습 영상으로 재학습이 필요해지는 경우는 수료 후 복습과 구분한다.
+    added = make_video(db, course, section=section, sort_order=2)
+    db.commit()
+    db.expire(course, ["videos"])
+    course_service.recalculate_enrollments_progress(course, db)
+    db.commit()
+    db.refresh(enrollment)
+    assert enrollment.status == "IN_PROGRESS"
+    assert enrollment.current_completed_at is None
+    assert enrollment.first_completed_at == first_at
+    complete_video(db, enrollment, added)
+    assert not learner_quiz.get_completion(db, learner.id, course.id).is_completed
+    review = learner_quiz.get_course_attempt(db, learner.id, course.id, "WRONG_REVIEW", None)
+    corrected = post_answer(client, learner, 0, answer_body(review))
+    assert corrected.json()["data"]["isCourseCompleted"]
+    assert corrected.json()["data"]["questionRecordStatus"] == "CORRECT"
+
+
+def test_quiz_validation_messages_and_openapi_constraints(client, db, get_user):
+    learner, _, _, _, unit, _, _, attempt = prepare_attempt(db, get_user)
+    body = answer_body(attempt)
+    for choice in (0, 5, "5"):
+        body["selectedChoiceNo"] = choice
+        response = post_answer(client, learner, unit.id, body)
+        assert response.status_code == 400
+        assert response.json()["error"]["message"] == "선택한 보기 번호는 1~4 사이여야 합니다."
+    response = client.get("/api/v1/me/quiz-notes?status=INVALID", headers=auth_header(learner.id))
+    assert response.status_code == 400
+    assert response.json()["error"]["message"] == "유효하지 않은 복습 상태입니다."
+    schema = client.get("/openapi.json").json()
+    choice_schema = schema["components"]["schemas"]["QuizAnswerRequest"]["properties"][
+        "selectedChoiceNo"
+    ]
+    assert (choice_schema["minimum"], choice_schema["maximum"]) == (1, 4)
+    params = schema["paths"]["/api/v1/me/quiz-notes"]["get"]["parameters"]
+    status_schema = next(param["schema"] for param in params if param["name"] == "status")
+    assert status_schema["enum"] == ["ALL", "CORRECT", "REVIEW_NEEDED"]

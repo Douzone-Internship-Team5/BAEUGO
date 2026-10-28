@@ -1187,7 +1187,10 @@ def test_c8_and_c9_video_likes_and_list(client: TestClient, db: Session, get_use
     )
 
 
-def test_c7_auto_course_completion_when_all_items_done(client: TestClient, db: Session, get_user):
+def test_c7_auto_course_completion_when_all_items_done(
+    client: TestClient, db: Session, get_user, monkeypatch
+):
+    freeze_learning_time(monkeypatch, "2026-04-09T22:00:00+09:00")
     instructor = get_user("instructor1@baeugo.test")
     learner = get_user("learner2@baeugo.test")
     course, ot, sec1, v1, v2, uq1, sec2, v3, uq2, fq = _build_full_course(db, instructor)
@@ -1340,7 +1343,8 @@ def test_inactive_items_and_sections_filtering_across_endpoints(
     assert res_likes.json()["data"]["totalCount"] == 0
 
 
-def test_auth_and_mode_permissions_matrix(client: TestClient, db: Session, get_user):
+def test_auth_and_mode_permissions_matrix(client: TestClient, db: Session, get_user, monkeypatch):
+    freeze_learning_time(monkeypatch, "2026-04-09T22:00:00+09:00")
     instructor = get_user("instructor1@baeugo.test")
     operator = get_user("admin@baeugo.test")
     learner = get_user("learner2@baeugo.test")
@@ -1583,7 +1587,10 @@ def test_c8_like_count_drift_sync_and_c5_draft_owner_access(
     )
 
 
-def test_c7_lock_and_exemption_rules_match_c5(client: TestClient, db: Session, get_user):
+def test_c7_lock_and_exemption_rules_match_c5(
+    client: TestClient, db: Session, get_user, monkeypatch
+):
+    freeze_learning_time(monkeypatch, "2026-10-17T12:00:00+09:00")
     instructor = get_user("instructor1@baeugo.test")
     learner = get_user("learner2@baeugo.test")
     course, ot, sec1, v1, v2, uq1, sec2, v3, uq2, fq = _build_full_course(db, instructor)
@@ -1695,8 +1702,9 @@ def test_c7_lock_and_exemption_rules_match_c5(client: TestClient, db: Session, g
 
 
 def test_c7_activity_seconds_elapsed_and_future_time_validation(
-    client: TestClient, db: Session, get_user
+    client: TestClient, db: Session, get_user, monkeypatch
 ):
+    freeze_learning_time(monkeypatch, "2026-10-17T12:00:00+09:00")
     instructor = get_user("instructor1@baeugo.test")
     learner = get_user("learner2@baeugo.test")
     course, ot, sec1, v1, *_ = _build_full_course(db, instructor)
@@ -1722,8 +1730,9 @@ def test_c7_activity_seconds_elapsed_and_future_time_validation(
     assert res_exceed.json()["error"]["code"] == "VALIDATION_ERROR"
 
     # 2. 명백한 미래 시각 전송 -> 400 VALIDATION_ERROR
-    future_start = (datetime.now(SEOUL_TZ) + timedelta(hours=1)).isoformat()
-    future_end = (datetime.now(SEOUL_TZ) + timedelta(hours=1, minutes=5)).isoformat()
+    now = learning_service.datetime.now(SEOUL_TZ)
+    future_start = (now + timedelta(hours=1)).isoformat()
+    future_end = (now + timedelta(hours=1, minutes=5)).isoformat()
     res_future = client.put(
         f"/api/v1/videos/{v1.id}/progress",
         json={
@@ -1860,8 +1869,9 @@ def test_c7_cross_midnight_session_daily_attendance_aggregation(
 
 
 def test_c7_session_key_reuse_validates_video_id_and_activity_type_and_single_enrollment_recalc(
-    client: TestClient, db: Session, get_user
+    client: TestClient, db: Session, get_user, monkeypatch
 ):
+    freeze_learning_time(monkeypatch, "2026-10-17T12:00:00+09:00")
     instructor = get_user("instructor1@baeugo.test")
     learner2 = get_user("learner2@baeugo.test")
     learner1 = get_user("learner1@baeugo.test")
@@ -1995,7 +2005,9 @@ def test_c7_paused_midnight_session_retries_do_not_inflate_attendance(
     db.commit()
     path = f"/api/v1/videos/{video.id}/progress"
 
-    def save(end, seconds, *, key="paused-midnight", start="2026-10-26T23:58:00+09:00"):
+    def save(
+        end, seconds, *, key="paused-midnight", start="2026-10-26T23:58:00+09:00", expected=200
+    ):
         response = client.put(
             path,
             headers=auth_header(learner.id),
@@ -2010,10 +2022,12 @@ def test_c7_paused_midnight_session_retries_do_not_inflate_attendance(
                 },
             },
         )
-        assert response.status_code == 200
-        return response.json()["data"]
+        assert response.status_code == expected
+        return response.json().get("data")
 
+    freeze_learning_time(monkeypatch, "2026-10-26T23:59:00+09:00")
     save("2026-10-26T23:59:00+09:00", 30)
+    freeze_learning_time(monkeypatch, "2026-10-27T12:00:00+09:00")
     # 경과 180초 중 활동 90초: 전날 120/180, 당일 60/180 비율로 60초·30초 배분.
     for _ in range(3):
         result = save("2026-10-27T00:01:00+09:00", 90)
@@ -2037,16 +2051,15 @@ def test_c7_paused_midnight_session_retries_do_not_inflate_attendance(
     extended = save("2026-10-27T00:02:00+09:00", 120)
     assert extended["todayActiveSeconds"] == 80
     assert extended["todayIsAttended"] is True
-    # 늦게 도착한 이전 요청도 세션 누적값을 되돌리거나 출석 시간을 더하지 않는다.
-    stale = save("2026-10-26T23:59:00+09:00", 30)
-    assert stale["todayActiveSeconds"] == 80
+    # 전날 끝난 요청은 거부하며 이미 저장된 누적 활동에는 영향을 주지 않는다.
+    save("2026-10-26T23:59:00+09:00", 30, expected=400)
     session = db.query(StudyActivitySession).filter_by(session_key="paused-midnight").one()
     db.refresh(session)
     assert session.active_seconds == 120
 
 
 @pytest.mark.parametrize("has_today_record", [False, True])
-def test_c7_delayed_activity_returns_today_attendance(
+def test_c7_yesterday_activity_is_rejected_without_changing_attendance(
     client: TestClient, db: Session, get_user, monkeypatch, has_today_record
 ):
     freeze_learning_time(monkeypatch, "2026-10-27T12:00:00+09:00")
@@ -2080,15 +2093,14 @@ def test_c7_delayed_activity_returns_today_attendance(
             },
         },
     )
-    assert response.status_code == 200
-    result = response.json()["data"]
-    assert result["todayActiveSeconds"] == (75 if has_today_record else 0)
-    assert result["todayIsAttended"] is has_today_record
-    previous = db.get(AttendanceDay, (learner.id, date(2026, 10, 26)), populate_existing=True)
-    assert previous.active_seconds == 30
+    assert response.status_code == 400
+    assert db.get(AttendanceDay, (learner.id, date(2026, 10, 26))) is None
+    assert db.query(StudyActivitySession).count() == 0
+    assert db.query(VideoProgress).count() == 0
     current = db.get(AttendanceDay, (learner.id, date(2026, 10, 27)), populate_existing=True)
     if has_today_record:
         assert current.active_seconds == 75
         assert current.target_minutes_snapshot == 1
+        assert current.is_attended
     else:
         assert current is None
