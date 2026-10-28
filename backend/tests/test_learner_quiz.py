@@ -69,7 +69,7 @@ def test_unit_contract_lock_and_resume(client, db, get_user):
     assert client.get(path, headers=headers).json()["data"]["attemptId"] == data["attemptId"]
     assert db.scalar(select(func.count()).select_from(QuizAttempt)) == 1
     schema = client.get("/openapi.json").json()
-    assert "/api/v1/quizzes/{id}/answers" not in schema["paths"]
+    assert "post" in schema["paths"]["/api/v1/quizzes/{id}/answers"]
     assert "/api/v1/me/today" in schema["paths"]
 
 
@@ -100,7 +100,7 @@ def test_grading_resume_duplicate_and_stats(db, get_user):
     result = learner_quiz.grade_answer(db, learner.id, unit.id, body)
     assert not result.is_correct
     assert result.next_order_no == 2
-    # Q-2 공통 집계 연결 전 채점 부분만 검사한다. 실제 HTTP 제출은 아직 비공개다.
+    # 채점 함수는 commit하지 않는다. HTTP 제출·출석 연동은 별도 API 테스트에서 검사한다.
     db.commit()
     resumed = learner_quiz.get_unit_attempt(db, learner.id, section.id)
     assert resumed.attempt_id == attempt.attempt_id
@@ -224,7 +224,7 @@ def test_grading_rollback_is_atomic(db, get_user):
     attempt = learner_quiz.get_unit_attempt(db, learner.id, section.id)
     with db.begin_nested() as transaction:
         learner_quiz.grade_answer(db, learner.id, unit.id, answer_request(attempt))
-        # 향후 활동 시간 저장 실패 시 같은 트랜잭션 전체를 되돌릴 수 있어야 한다.
+        # 채점 이후 실패 시 같은 트랜잭션 전체를 되돌릴 수 있어야 한다.
         transaction.rollback()
     assert db.scalar(select(func.count()).select_from(QuestionAnswer)) == 0
     assert db.get(CourseDailyStat, (course.id, datetime.now(SEOUL_TZ).date())) is None
