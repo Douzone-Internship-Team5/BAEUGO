@@ -1,8 +1,15 @@
 from datetime import datetime
-from typing import Literal
+from typing import Annotated, Literal
 
-from pydantic import Field
+from pydantic import (
+    Field,
+    ValidationError,
+    ValidatorFunctionWrapHandler,
+    WrapValidator,
+    field_validator,
+)
 
+from app.core.errors import AppError
 from app.schemas.common import CamelModel
 
 
@@ -49,6 +56,20 @@ class QuizAnswerRequest(CamelModel):
     attempt_question_id: int = Field(gt=0)
     selected_choice_no: int = Field(ge=1, le=4)
     activity_session: QuizActivitySession
+
+    @field_validator("selected_choice_no", mode="wrap")
+    @classmethod
+    def validate_selected_choice(cls, value: object, handler: ValidatorFunctionWrapHandler) -> int:
+        try:
+            return handler(value)
+        except ValidationError as error:
+            if any(
+                item["type"] in ("greater_than_equal", "less_than_equal") for item in error.errors()
+            ):
+                raise AppError(
+                    400, "VALIDATION_ERROR", "선택한 보기 번호는 1~4 사이여야 합니다."
+                ) from error
+            raise
 
 
 class QuizAnswerData(CamelModel):
@@ -108,5 +129,14 @@ class QuizNotesData(CamelModel):
     quiz_notes: list[QuizNote]
 
 
-ReviewStatus = Literal["ALL", "CORRECT", "REVIEW_NEEDED"]
+def validate_review_status(value: object, handler: ValidatorFunctionWrapHandler) -> str:
+    try:
+        return handler(value)
+    except ValidationError as error:
+        raise AppError(400, "VALIDATION_ERROR", "유효하지 않은 복습 상태입니다.") from error
+
+
+ReviewStatus = Annotated[
+    Literal["ALL", "CORRECT", "REVIEW_NEEDED"], WrapValidator(validate_review_status)
+]
 CourseAttemptType = Literal["FINAL", "WRONG_REVIEW"]
