@@ -1,5 +1,7 @@
 from datetime import date, time
 
+from pydantic import Field
+
 from app.schemas.common import CamelModel
 
 
@@ -30,7 +32,9 @@ class RecommendedShortform(CamelModel):
     course_title: str
     thumbnail_storage_key: str | None
     thumbnail_url: str | None
-    estimated_completion_days: int
+    estimated_completion_days: int = Field(
+        description="이어보기는 남은 학습 영상 분량, OT 추천은 전체 학습 영상 분량 기준 예상 일수"
+    )
 
 
 class TodayData(CamelModel):

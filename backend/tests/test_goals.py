@@ -1,7 +1,14 @@
 from datetime import date, datetime, time, timedelta
 
 from app.core.timezone import SEOUL_TZ
-from app.models import AttendanceDay, LearningGoal, LearningTimeSlot, QuizAttempt, VideoProgress
+from app.models import (
+    AttendanceDay,
+    LearningGoal,
+    LearningTimeSlot,
+    QuizAttempt,
+    VideoProgress,
+    VideoView,
+)
 from app.services import goals
 from tests.conftest import auth_header
 from tests.factories import enroll, make_course, make_quiz, make_section, make_video
@@ -170,3 +177,86 @@ def test_ot_recommendation_ranking_and_remaining_time(db, get_user, monkeypatch)
     result = goals.get_today(db, learner.id)
     assert result.goal.remaining_seconds == 0
     assert result.recommended_shortforms == []
+
+
+def test_ot_recommendations_limit_and_replace_viewed_items(client, db, get_user, monkeypatch):
+    today = freeze_today(monkeypatch)
+    learner = get_user("learner2@baeugo.test")
+    instructor = get_user("instructor1@baeugo.test")
+    course = make_course(db, instructor)
+    section = make_section(db, course)
+    lesson = make_video(db, course, section=section, duration_seconds=60)
+    enroll(db, learner, course)
+    ots = []
+    for index in range(12):
+        other_course = make_course(db, instructor)
+        ot = make_video(db, other_course, video_type="OT", duration_seconds=60)
+        ot.view_count = 100 - index * 5
+        ots.append(ot)
+    # 타인의 조회 기록으로 현재 사용자의 추천을 제외해서는 안 된다.
+    db.add(VideoView(user_id=instructor.id, video_id=ots[0].id, view_date=today))
+    # 과거에 본 영상도 미시청 추천에서는 제외한다.
+    db.add(VideoView(user_id=learner.id, video_id=ots[1].id, view_date=today - timedelta(days=5)))
+    db.commit()
+
+    def recommended_ids():
+        response = client.get("/api/v1/me/today", headers=auth_header(learner.id))
+        assert response.status_code == 200
+        items = response.json()["data"]["recommendedShortforms"]
+        assert [item["videoId"] for item in items if item["videoType"] == "LESSON"] == [lesson.id]
+        return [item["videoId"] for item in items if item["videoType"] == "OT"]
+
+    expected = [ot.id for ot in ots if ot.id != ots[1].id]
+    assert recommended_ids() == expected[:10]
+    viewed = client.post(
+        f"/api/v1/videos/{ots[0].id}/views",
+        json={"playedSeconds": 3},
+        headers=auth_header(learner.id),
+    )
+    assert viewed.status_code == 200
+    assert recommended_ids() == expected[1:11]
+    for ot in ots[2:]:
+        db.add(VideoView(user_id=learner.id, video_id=ot.id, view_date=today))
+    db.commit()
+    assert recommended_ids() == []
+
+
+def test_continue_completion_days_use_remaining_study_but_ot_uses_full_course(
+    db, get_user, monkeypatch
+):
+    freeze_today(monkeypatch)
+    learner = get_user("learner2@baeugo.test")
+    db.get(LearningGoal, learner.id).daily_target_minutes = 20
+    course = make_course(db, get_user("instructor1@baeugo.test"))
+    section = make_section(db, course)
+    completed = make_video(db, course, section=section, duration_seconds=3000)
+    next_video = make_video(db, course, section=section, duration_seconds=3000, sort_order=2)
+    ot = make_video(db, course, video_type="OT", duration_seconds=60)
+    enrollment = enroll(db, learner, course)
+    db.add_all(
+        [
+            VideoProgress(
+                enrollment_id=enrollment.id,
+                video_id=completed.id,
+                is_completed=True,
+                watched_seconds=2700,
+            ),
+            VideoProgress(
+                enrollment_id=enrollment.id,
+                video_id=next_video.id,
+                is_completed=False,
+                watched_seconds=1800,
+                last_position_seconds=2900,
+            ),
+        ]
+    )
+    db.commit()
+    items = {item.video_id: item for item in goals.get_today(db, learner.id).recommended_shortforms}
+    # 총 100분 중 완료 50분, 미완료 영상의 실제 시청 30분을 제외하면 20분이다.
+    assert items[next_video.id].estimated_completion_days == 1
+    assert items[ot.id].estimated_completion_days == 5
+    progress = db.get(VideoProgress, (enrollment.id, next_video.id))
+    progress.watched_seconds = 1799
+    db.commit()
+    items = {item.video_id: item for item in goals.get_today(db, learner.id).recommended_shortforms}
+    assert items[next_video.id].estimated_completion_days == 2

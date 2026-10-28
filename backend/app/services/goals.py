@@ -12,7 +12,7 @@ from app.models.course import Course
 from app.models.goal import LearningGoal
 from app.models.learning import Enrollment
 from app.models.profile import LearnerProfile, LearnerTopicInterest
-from app.models.video import Video
+from app.models.video import Video, VideoView
 from app.schemas.goals import (
     AttendanceData,
     AttendanceStreak,
@@ -25,6 +25,8 @@ from app.schemas.goals import (
 from app.services.attendance import get_current_streak
 from app.services.learning_completion import active_curriculum, completed_item_ids
 from app.services.storage import get_thumbnail_url
+
+OT_RECOMMENDATION_LIMIT = 10
 
 
 def _require_goal(db: Session, learner_id: int) -> LearningGoal:
@@ -42,9 +44,19 @@ def _require_goal(db: Session, learner_id: int) -> LearningGoal:
     return goal
 
 
-def _recommendation(video: Video, course: Course, kind: str, target_minutes: int):
-    _, lessons, _ = active_curriculum(course)
-    duration = sum(lesson.duration_seconds for lesson in lessons)
+def _recommendation(
+    video: Video,
+    course: Course,
+    kind: str,
+    target_minutes: int,
+    *,
+    remaining_lesson_seconds: int | None = None,
+):
+    if remaining_lesson_seconds is None:
+        _, lessons, _ = active_curriculum(course)
+        duration = sum(lesson.duration_seconds for lesson in lessons)
+    else:
+        duration = remaining_lesson_seconds
     thumbnail = video.thumbnail_storage_key or course.thumbnail_storage_key
     return RecommendedShortform(
         recommendation_type=kind,
@@ -108,17 +120,34 @@ def _recommend_shortforms(
                 break
         if next_video is None or blocked_by_quiz:
             continue
-        progress = next(
-            (item for item in enrollment.video_progresses if item.video_id == next_video.id), None
-        )
+        progress_by_video = {item.video_id: item for item in enrollment.video_progresses}
+        progress = progress_by_video.get(next_video.id)
         position = progress.last_position_seconds if progress else 0
         remaining_video = max(0, next_video.duration_seconds - position)
         if remaining_video == 0:
             # 끝까지 탐색했어도 중간 미시청 구간이 있으면 전체 길이를 기준으로 추천한다.
             remaining_video = next_video.duration_seconds
         if remaining_video <= remaining_seconds:
+            # 이어보기 예상 일수는 완료 영상과 실제 시청한 분량을 제외한다.
+            remaining_lesson_seconds = sum(
+                max(
+                    0,
+                    video.duration_seconds
+                    - max(0, progress_by_video[video.id].watched_seconds or 0),
+                )
+                if video.id in progress_by_video
+                else video.duration_seconds
+                for video in videos
+                if video.id not in completed
+            )
             recommendations.append(
-                _recommendation(next_video, course, "CONTINUE_LESSON", target_minutes)
+                _recommendation(
+                    next_video,
+                    course,
+                    "CONTINUE_LESSON",
+                    target_minutes,
+                    remaining_lesson_seconds=remaining_lesson_seconds,
+                )
             )
 
     profile = db.get(LearnerProfile, learner_id)
@@ -143,6 +172,9 @@ def _recommend_shortforms(
             Video.video_type == "OT",
             Video.is_active.is_(True),
             Video.duration_seconds <= remaining_seconds,
+            ~select(VideoView.video_id)
+            .where(VideoView.user_id == learner_id, VideoView.video_id == Video.id)
+            .exists(),
         )
         .options(
             joinedload(Video.course).selectinload(Course.sections),
@@ -156,6 +188,7 @@ def _recommend_shortforms(
             Course.published_at.desc(),
             Video.id.desc(),
         )
+        .limit(OT_RECOMMENDATION_LIMIT)
     ).all()
     recommendations.extend(
         _recommendation(video, video.course, "RECOMMENDED_OT", target_minutes)
