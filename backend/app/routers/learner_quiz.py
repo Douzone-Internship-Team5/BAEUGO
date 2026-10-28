@@ -9,6 +9,8 @@ from app.schemas.learner_quiz import (
     CancelAttemptData,
     CompletionData,
     CourseAttemptType,
+    QuizAnswerData,
+    QuizAnswerRequest,
     QuizAttemptData,
     QuizNotesData,
     ReviewStatus,
@@ -16,6 +18,11 @@ from app.schemas.learner_quiz import (
 from app.services import learner_quiz as quiz_service
 
 router = APIRouter(tags=["learner-quiz"])
+
+
+@router.post("/quizzes/{id}/answers", response_model=DataResponse[QuizAnswerData])
+def submit_answer(id: int, body: QuizAnswerRequest, current_user: LearnerUser, db: DbSession):
+    return DataResponse(data=quiz_service.submit_answer(db, current_user.id, id, body))
 
 
 @router.get("/sections/{id}/quiz", response_model=DataResponse[QuizAttemptData])

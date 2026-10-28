@@ -28,6 +28,7 @@ from app.schemas.learner_quiz import (
     QuizNoteCounts,
     QuizNotesData,
 )
+from app.services.learning_activity import lock_learning_activity, record_learning_activity
 from app.services.learning_completion import (
     active_curriculum,
     completed_item_ids,
@@ -240,14 +241,46 @@ def cancel_attempt(db: Session, learner_id: int, attempt_id: int) -> CancelAttem
     return CancelAttemptData(attempt_id=attempt.id, status=attempt.status)
 
 
-def grade_answer(
+def submit_answer(
     db: Session, learner_id: int, quiz_id: int, body: QuizAnswerRequest
 ) -> QuizAnswerData:
-    """Q-2 채점 부분. 아직 라우팅하지 않으며 commit하지 않는다.
+    """답안·오답 상태·통계·수료·학습 활동·출석을 하나의 트랜잭션으로 저장한다."""
+    try:
+        lock_learning_activity(db, learner_id)
+        now = datetime.now(SEOUL_TZ)
+        result = grade_answer(db, learner_id, quiz_id, body, now=now)
+        attempt = db.get(QuizAttempt, body.attempt_id)
+        assert attempt is not None
+        activity = body.activity_session
+        record_learning_activity(
+            db,
+            learner_id=learner_id,
+            enrollment_id=attempt.enrollment_id,
+            activity_type="QUIZ",
+            session_key=activity.session_key,
+            started_at=activity.started_at,
+            ended_at=activity.ended_at,
+            active_seconds=activity.active_seconds,
+            now=now,
+            quiz_attempt_id=attempt.id,
+        )
+        db.commit()
+        return result
+    except Exception:
+        # 활동 저장 또는 commit 실패 시 채점 결과까지 함께 되돌린 뒤 원래 오류를 전달한다.
+        db.rollback()
+        raise
 
-    C-7 공통 처리 연결 시 호출자가 같은 트랜잭션에서 activity_session 저장·출석
-    집계를 마친 뒤 commit해야 한다. 실패하면 답안·통계까지 함께 rollback한다.
-    """
+
+def grade_answer(
+    db: Session,
+    learner_id: int,
+    quiz_id: int,
+    body: QuizAnswerRequest,
+    *,
+    now: datetime | None = None,
+) -> QuizAnswerData:
+    """채점과 수료 판정만 수행하며, 활동 저장 및 트랜잭션 완료는 submit_answer가 담당한다."""
     course, enrollment, attempt = _owned_attempt(db, learner_id, body.attempt_id)
     if quiz_id != (attempt.quiz_id if attempt.quiz_id is not None else 0):
         raise AppError(404, "NOT_FOUND", "응시 세션의 퀴즈와 일치하지 않습니다.")
@@ -262,7 +295,7 @@ def grade_answer(
     question = item.question
     if body.selected_choice_no not in {choice.choice_no for choice in question.choices}:
         raise AppError(400, "VALIDATION_ERROR", "선택한 보기 번호는 1~4 사이여야 합니다.")
-    now = datetime.now(SEOUL_TZ)
+    now = now or datetime.now(SEOUL_TZ)
     is_correct = body.selected_choice_no == question.correct_choice_no
     answer = QuestionAnswer(
         attempt_question_id=item.id,
