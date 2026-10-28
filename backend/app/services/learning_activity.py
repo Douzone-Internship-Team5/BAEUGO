@@ -42,6 +42,7 @@ def record_learning_activity(
 ) -> None:
     """C-7·Q-2 공통 활동 저장. 호출자가 사용자 잠금과 commit·rollback을 담당한다."""
     session_key = session_key.strip()
+    now = _ensure_seoul_aware(now)
     started_at = _ensure_seoul_aware(started_at)
     ended_at = _ensure_seoul_aware(ended_at)
     if not session_key or len(session_key) > 64 or active_seconds < 0 or ended_at < started_at:
@@ -49,6 +50,10 @@ def record_learning_activity(
 
     max_allowed_time = now + timedelta(seconds=MAX_FUTURE_SKEW_SECONDS)
     if started_at > max_allowed_time or ended_at > max_allowed_time:
+        raise AppError(400, "VALIDATION_ERROR", validation_message)
+
+    earliest_start_date = now.date() - timedelta(days=1)
+    if ended_at.date() != now.date() or started_at.date() < earliest_start_date:
         raise AppError(400, "VALIDATION_ERROR", validation_message)
 
     if active_seconds > _max_allowed_active_seconds(started_at, ended_at):
@@ -70,6 +75,9 @@ def record_learning_activity(
 
         existing_started = _ensure_seoul_aware(existing_session.started_at)
         existing_ended = _ensure_seoul_aware(existing_session.ended_at)
+        # 요청의 시작 시각만 바꿔 오래된 세션을 오늘 활동으로 재사용할 수 없다.
+        if existing_started.date() < earliest_start_date:
+            raise AppError(400, "VALIDATION_ERROR", validation_message)
         eff_ended = max(ended_at, existing_ended)
         if eff_ended < existing_started:
             raise AppError(400, "VALIDATION_ERROR", validation_message)
