@@ -1123,10 +1123,8 @@ def _split_session_into_daily_slices(
     started_at: datetime,
     ended_at: datetime,
     active_seconds: int,
-    *,
-    locked_prior_day_seconds: dict[date, int] | None = None,
 ) -> list[tuple[date, datetime, datetime, int]]:
-    """세션의 [started_at, ended_at] 구간을 Asia/Seoul 자정 기준으로 날짜별 분할한다."""
+    """누적 활동 시간을 Asia/Seoul 날짜별 경과 시간에 비례해 일관되게 분할한다."""
     st = _ensure_seoul_aware(started_at)
     et = _ensure_seoul_aware(ended_at)
     act_sec = max(0, int(active_seconds or 0))
@@ -1152,53 +1150,6 @@ def _split_session_into_daily_slices(
         d, seg_st, seg_et, _ = raw_segments[0]
         return [(d, seg_st, seg_et, act_sec)]
 
-    if locked_prior_day_seconds:
-        allocated: dict[date, int] = {}
-        remaining = act_sec
-        for d, seg_st, seg_et, _ in raw_segments:
-            if d in locked_prior_day_seconds:
-                cap = _max_allowed_active_seconds(seg_st, seg_et)
-                locked_val = min(remaining, max(0, min(locked_prior_day_seconds[d], cap)))
-                allocated[d] = locked_val
-                remaining -= locked_val
-
-        unallocated_segs = [seg for seg in raw_segments if seg[0] not in allocated]
-        if unallocated_segs and remaining > 0:
-            unalloc_total_elapsed = sum(seg[3] for seg in unallocated_segs)
-            cum_elapsed = 0.0
-            prev_alloc = 0
-            for d, seg_st, seg_et, seg_elapsed in unallocated_segs:
-                cum_elapsed += seg_elapsed
-                target_cum = round(remaining * cum_elapsed / unalloc_total_elapsed)
-                seg_alloc = target_cum - prev_alloc
-                prev_alloc = target_cum
-                cap = _max_allowed_active_seconds(seg_st, seg_et)
-                allocated[d] = min(seg_alloc, cap)
-            leftover = remaining - sum(allocated.get(seg[0], 0) for seg in unallocated_segs)
-            if leftover > 0:
-                for d, seg_st, seg_et, _ in reversed(raw_segments):
-                    cap = _max_allowed_active_seconds(seg_st, seg_et)
-                    cur_val = allocated.get(d, 0)
-                    add_val = min(leftover, max(0, cap - cur_val))
-                    allocated[d] = cur_val + add_val
-                    leftover -= add_val
-                    if leftover <= 0:
-                        break
-        else:
-            for d, _, _, _ in unallocated_segs:
-                allocated[d] = 0
-            if remaining > 0:
-                for d, seg_st, seg_et, _ in reversed(raw_segments):
-                    cap = _max_allowed_active_seconds(seg_st, seg_et)
-                    cur_val = allocated.get(d, 0)
-                    add_val = min(remaining, max(0, cap - cur_val))
-                    allocated[d] = cur_val + add_val
-                    remaining -= add_val
-                    if remaining <= 0:
-                        break
-
-        return [(d, seg_st, seg_et, allocated.get(d, 0)) for d, seg_st, seg_et, _ in raw_segments]
-
     total_elapsed = sum(seg[3] for seg in raw_segments)
     result: list[tuple[date, datetime, datetime, int]] = []
     cum_elapsed = 0.0
@@ -1216,7 +1167,6 @@ def _compute_deduplicated_active_seconds(
     sessions: list[StudyActivitySession],
     *,
     study_date: date | None = None,
-    session_day_overrides: dict[tuple[int, date], int] | None = None,
 ) -> int:
     """동일 날짜 학습 활동 세션에서 동시(중복) 시간 구간을 제외하고 인정 학습 시간을 합산한다."""
     if not sessions:
@@ -1239,8 +1189,6 @@ def _compute_deduplicated_active_seconds(
             else:
                 _, seg_st, seg_et, seg_act = matched
 
-            if session_day_overrides is not None and (s.id, study_date) in session_day_overrides:
-                seg_act = session_day_overrides[(s.id, study_date)]
             normalized.append((seg_st, seg_et, seg_act))
         else:
             normalized.append((st, et, act_sec))
@@ -1543,8 +1491,6 @@ def save_video_progress(
 
     attendances_map: dict[date, AttendanceDay | None] = {}
     base_untracked_map: dict[date, int] = {}
-    locked_prior_day_seconds: dict[date, int] = {}
-    last_affected_date = affected_dates[-1]
 
     for d in affected_dates:
         prev_day_sessions = _get_learner_day_sessions(db, current_user.id, d)
@@ -1557,25 +1503,11 @@ def save_video_progress(
         )
         attendances_map[d] = att_d
 
-        if existing_session is not None and d < last_affected_date and att_d is not None:
-            other_sessions = [s for s in prev_day_sessions if s.id != existing_session.id]
-            other_seconds = _compute_deduplicated_active_seconds(other_sessions, study_date=d)
-            prior_contrib = min(
-                existing_session.active_seconds,
-                max(0, (att_d.active_seconds or 0) - other_seconds),
-            )
-            locked_prior_day_seconds[d] = prior_contrib
-            prev_overrides = {(existing_session.id, d): prior_contrib}
-            prev_day_seconds_with_lock = _compute_deduplicated_active_seconds(
-                prev_day_sessions, study_date=d, session_day_overrides=prev_overrides
-            )
-            base_untracked_map[d] = max(0, (att_d.active_seconds or 0) - prev_day_seconds_with_lock)
-        else:
-            base_untracked_map[d] = (
-                max(0, (att_d.active_seconds or 0) - prev_day_seconds) if att_d is not None else 0
-            )
+        # 갱신 전후에 같은 분할 기준을 써야 재전송 시 차액을 새 학습 시간으로 더하지 않는다.
+        base_untracked_map[d] = (
+            max(0, (att_d.active_seconds or 0) - prev_day_seconds) if att_d is not None else 0
+        )
 
-    session_day_overrides: dict[tuple[int, date], int] = {}
     if existing_session is None:
         new_session = StudyActivitySession(
             enrollment_id=enrollment.id,
@@ -1591,7 +1523,6 @@ def save_video_progress(
         db.add(new_session)
         db.flush()
     else:
-        existing_started = _ensure_seoul_aware(existing_session.started_at)
         existing_ended = _ensure_seoul_aware(existing_session.ended_at)
         if act.active_seconds > existing_session.active_seconds:
             existing_session.active_seconds = act.active_seconds
@@ -1599,22 +1530,11 @@ def save_video_progress(
             existing_session.ended_at = ended_at
         db.flush()
 
-        eff_ended = _ensure_seoul_aware(existing_session.ended_at)
-        final_slices = _split_session_into_daily_slices(
-            existing_started,
-            eff_ended,
-            existing_session.active_seconds,
-            locked_prior_day_seconds=locked_prior_day_seconds or None,
-        )
-        for d, _, _, seg_act in final_slices:
-            session_day_overrides[(existing_session.id, d)] = seg_act
-
     for d in affected_dates:
         updated_day_sessions = _get_learner_day_sessions(db, current_user.id, d)
         new_day_seconds = _compute_deduplicated_active_seconds(
             updated_day_sessions,
             study_date=d,
-            session_day_overrides=session_day_overrides or None,
         )
         total_d_seconds = base_untracked_map[d] + new_day_seconds
         att_d = attendances_map[d]
@@ -1648,12 +1568,11 @@ def save_video_progress(
             att_d.active_seconds = total_d_seconds
             att_d.is_attended = att_d.active_seconds >= att_d.target_minutes_snapshot * 60
 
-    response_attendance = attendances_map[last_affected_date]
-    assert response_attendance is not None
-
     db.commit()
     db.refresh(vp)
-    db.refresh(response_attendance)
+    response_attendance = db.get(
+        AttendanceDay, (current_user.id, now.date()), populate_existing=True
+    )
 
     return VideoProgressResponse(
         enrollment_id=enrollment.id,
@@ -1665,8 +1584,8 @@ def save_video_progress(
         is_completed=vp.is_completed,
         completed_at=vp.completed_at,
         remaining_seconds_for_completion=remaining_for_completion,
-        today_active_seconds=response_attendance.active_seconds,
-        today_is_attended=response_attendance.is_attended,
+        today_active_seconds=response_attendance.active_seconds if response_attendance else 0,
+        today_is_attended=response_attendance.is_attended if response_attendance else False,
     )
 
 
