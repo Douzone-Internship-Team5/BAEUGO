@@ -59,6 +59,7 @@ from app.services.learning_activity import (
     lock_learning_activity,
     record_learning_activity,
 )
+from app.services.learning_completion import recalculate_enrollment_progress
 from app.services.storage import get_thumbnail_url, get_video_stream_url
 
 COURSE_NOT_FOUND_MESSAGE = "존재하지 않는 강좌입니다."
@@ -1087,34 +1088,6 @@ def merge_watched_ranges(
     return merged
 
 
-def _recalculate_single_enrollment_progress(
-    enrollment: Enrollment,
-    *,
-    total_items_count: int,
-    completed_video_ids: set[int],
-    submitted_quiz_ids: set[int],
-    unresolved_wrong_count: int,
-    now: datetime,
-) -> None:
-    """개인 진도 저장 시 해당 enrollment 단건의 수료 상태만 재계산한다."""
-    if total_items_count <= 0:
-        return
-
-    completed_items = len(completed_video_ids) + len(submitted_quiz_ids)
-    is_fully_completed = (completed_items >= total_items_count) and (unresolved_wrong_count == 0)
-
-    if not is_fully_completed:
-        if enrollment.status == "COMPLETED":
-            enrollment.status = "IN_PROGRESS"
-            enrollment.current_completed_at = None
-    else:
-        if enrollment.status == "IN_PROGRESS":
-            enrollment.status = "COMPLETED"
-            enrollment.current_completed_at = now
-            if enrollment.first_completed_at is None:
-                enrollment.first_completed_at = now
-
-
 def save_video_progress(
     db: Session, video_id: int, current_user: User, body: VideoProgressRequest
 ) -> VideoProgressResponse:
@@ -1273,11 +1246,10 @@ def save_video_progress(
     if newly_completed:
         completed_video_ids.add(video.id)
         total_items_count = len(active_lesson_ids) + len(active_quiz_ids)
-        _recalculate_single_enrollment_progress(
+        recalculate_enrollment_progress(
             enrollment,
             total_items_count=total_items_count,
-            completed_video_ids=completed_video_ids,
-            submitted_quiz_ids=submitted_quiz_ids,
+            completed_items_count=len(completed_video_ids) + len(submitted_quiz_ids),
             unresolved_wrong_count=unresolved_wrong_count,
             now=now,
         )

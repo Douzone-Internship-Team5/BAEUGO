@@ -102,6 +102,31 @@ def unresolved_question_ids(db: Session, course: Course, enrollment_id: int) -> 
     )
 
 
+def recalculate_enrollment_progress(
+    enrollment: Enrollment,
+    *,
+    total_items_count: int,
+    completed_items_count: int,
+    unresolved_wrong_count: int,
+    now: datetime,
+) -> None:
+    """C-7의 상태 전환을 공유하며, 수료 후 복습 오답은 수료를 취소하지 않는다."""
+    if total_items_count <= 0:
+        return
+
+    all_items_completed = completed_items_count >= total_items_count
+    if enrollment.status == "COMPLETED":
+        # 새 학습 항목으로 진도가 부족해진 경우에만 재학습 상태로 전환한다.
+        if not all_items_completed:
+            enrollment.status = "IN_PROGRESS"
+            enrollment.current_completed_at = None
+    elif all_items_completed and unresolved_wrong_count == 0:
+        enrollment.status = "COMPLETED"
+        enrollment.current_completed_at = now
+        if enrollment.first_completed_at is None:
+            enrollment.first_completed_at = now
+
+
 def update_completion(db: Session, course: Course, enrollment: Enrollment) -> CompletionData:
     """해당 수강 등록만 판정한다. 호출자가 잠금과 트랜잭션 완료를 담당한다."""
     _, videos, quizzes = active_curriculum(course)
@@ -112,15 +137,14 @@ def update_completion(db: Session, course: Course, enrollment: Enrollment) -> Co
     )
     unresolved = len(unresolved_question_ids(db, course, enrollment.id))
     all_items_completed = total > 0 and completed == total
-    is_completed = all_items_completed and unresolved == 0
-    if is_completed:
-        now = datetime.now(SEOUL_TZ)
-        enrollment.status = "COMPLETED"
-        enrollment.first_completed_at = enrollment.first_completed_at or now
-        enrollment.current_completed_at = enrollment.current_completed_at or now
-    else:
-        enrollment.status = "IN_PROGRESS"
-        enrollment.current_completed_at = None
+    recalculate_enrollment_progress(
+        enrollment,
+        total_items_count=total,
+        completed_items_count=completed,
+        unresolved_wrong_count=unresolved,
+        now=datetime.now(SEOUL_TZ),
+    )
+    is_completed = enrollment.status == "COMPLETED"
 
     if is_completed:
         message, redirect = "강좌 수료가 완료되었습니다.", None

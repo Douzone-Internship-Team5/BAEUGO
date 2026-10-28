@@ -7,6 +7,7 @@ from sqlalchemy.orm import Session
 
 from app.models.course import Course
 from app.models.learning import Enrollment, QuestionRecord, QuizAttempt, VideoProgress
+from app.services.learning_completion import recalculate_enrollment_progress
 
 
 def validate_publish_readiness(course: Course, db: Session) -> tuple[bool, list[str]]:
@@ -100,7 +101,7 @@ def validate_publish_readiness(course: Course, db: Session) -> tuple[bool, list[
 def recalculate_enrollments_progress(course: Course, db: Session) -> None:
     """재공개 시 기존 수강생의 활성 항목 기준 이수율을 재계산한다.
 
-    - 활성 이수율이 100% 미만이거나 미해결 오답(REVIEW_NEEDED)이 있는 경우:
+    - 활성 이수율이 100% 미만인 경우:
       enrollments.status = 'IN_PROGRESS', current_completed_at = NULL (first_completed_at 보존)
     - 영상/퀴즈 비활성화로 인해 활성 이수율 100% 및 미해결 오답 0개를 달성한 경우:
       enrollments.status = 'COMPLETED', current_completed_at = NOW() 갱신
@@ -185,18 +186,13 @@ def recalculate_enrollments_progress(course: Course, db: Session) -> None:
         completed_items = completed_videos_cnt + submitted_quizzes_cnt
         unresolved_cnt = unresolved_counts.get(enr.id, 0)
 
-        is_fully_completed = (completed_items >= total_items_count) and (unresolved_cnt == 0)
-
-        if not is_fully_completed:
-            if enr.status == "COMPLETED":
-                enr.status = "IN_PROGRESS"
-                enr.current_completed_at = None
-        else:
-            if enr.status == "IN_PROGRESS":
-                enr.status = "COMPLETED"
-                enr.current_completed_at = now
-                if enr.first_completed_at is None:
-                    enr.first_completed_at = now
+        recalculate_enrollment_progress(
+            enr,
+            total_items_count=total_items_count,
+            completed_items_count=completed_items,
+            unresolved_wrong_count=unresolved_cnt,
+            now=now,
+        )
 
 
 def calculate_course_processing(course: Course) -> tuple[int, int]:
