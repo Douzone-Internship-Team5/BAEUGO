@@ -1,6 +1,7 @@
 import os
 from pathlib import Path
 
+from PIL import Image
 from sqlalchemy.orm import Session
 from starlette.datastructures import UploadFile
 
@@ -18,6 +19,11 @@ IMAGE_SIGNATURES = {
     ".jpg": b"\xff\xd8\xff",
     ".png": b"\x89PNG\r\n\x1a\n",
 }
+# 일부 카메라 JPEG은 Pillow가 MPO(여러 장을 담은 JPEG)로 판단한다.
+PILLOW_FORMATS = {".jpg": {"JPEG", "MPO"}, ".png": {"PNG"}}
+# 5000×5000. 일반 휴대폰 사진(약 1,200만 화소)은 통과하고,
+# 파일은 작은데 디코딩하면 메모리를 크게 쓰는 이미지(압축 폭탄)는 막는다.
+MAX_IMAGE_PIXELS = 25_000_000
 
 INVALID_FILE_MESSAGE = "jpg, png 형식의 5MB 이하 이미지만 업로드할 수 있습니다."
 PRESET_NOT_FOUND_MESSAGE = "존재하지 않는 프리셋 번호입니다."
@@ -78,7 +84,27 @@ def validate_image_file(file: UploadFile) -> str:
     file.file.seek(0)
     if not 0 < size <= MAX_PROFILE_IMAGE_SIZE or head != signature:
         raise AppError(400, "INVALID_FILE", INVALID_FILE_MESSAGE)
+    if not is_decodable_image(file, extension):
+        raise AppError(400, "INVALID_FILE", INVALID_FILE_MESSAGE)
     return extension
+
+
+def is_decodable_image(file: UploadFile, extension: str) -> bool:
+    """Pillow가 판단한 형식이 확장자와 같고, 픽셀 수가 기준 이하이며, 끝까지 디코딩되는지 본다."""
+    try:
+        with Image.open(file.file) as image:
+            # open은 머리 부분만 읽는다. 픽셀 수는 디코딩 전에 확인해야 압축 폭탄을 막을 수 있다.
+            if image.format not in PILLOW_FORMATS[extension]:
+                return False
+            if image.width * image.height > MAX_IMAGE_PIXELS:
+                return False
+            image.load()
+    # 깨진 파일은 형식에 따라 OSError·SyntaxError·ValueError 등 여러 예외로 실패한다.
+    except Exception:
+        return False
+    finally:
+        file.file.seek(0)
+    return True
 
 
 def save_profile_image_key(db: Session, user: User, key: str) -> ProfileImageResponse:

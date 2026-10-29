@@ -1,8 +1,13 @@
 import base64
+import io
+import random
 import re
+import struct
+import zlib
 from pathlib import Path
 
 import pytest
+from PIL import Image
 
 from app.seed import PROFILE_PRESET_SOURCE_DIR, seed_profile_presets
 from tests.conftest import auth_header
@@ -30,6 +35,33 @@ JPG_BYTES = base64.b64decode(
 GIF_BYTES = (
     b"GIF89a\x01\x00\x01\x00\x80\x00\x00\x00\x00\x00\xff\xff\xff!\xf9\x04\x01\x00\x00\x00\x00,"
 )
+PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
+JPEG_SIGNATURE = b"\xff\xd8\xff\xe0"
+
+
+def image_bytes(image_format: str, size=(64, 64), mode="RGB") -> bytes:
+    if mode == "RGB":
+        # 압축이 덜 되는 무작위 픽셀이어야 잘라냈을 때 데이터가 실제로 부족해진다.
+        pixels = random.Random(0).randbytes(size[0] * size[1] * 3)
+        image = Image.frombytes("RGB", size, pixels)
+    else:
+        image = Image.new(mode, size)
+    buffer = io.BytesIO()
+    image.save(buffer, image_format)
+    return buffer.getvalue()
+
+
+def png_claiming_size(width: int, height: int) -> bytes:
+    """머리(IHDR)의 가로·세로만 크게 바꾼 PNG. 압축 폭탄처럼 작은 파일이 큰 이미지를 주장한다."""
+    content = bytearray(image_bytes("PNG", size=(1, 1)))
+    # 서명(8) + 길이(4) + "IHDR"(4) 다음이 가로·세로, 그 뒤 9바이트 뒤에 CRC가 온다.
+    struct.pack_into(">II", content, 16, width, height)
+    struct.pack_into(">I", content, 29, zlib.crc32(bytes(content[12:29])))
+    return bytes(content)
+
+
+NOISE_PNG = image_bytes("PNG")
+NOISE_JPG = image_bytes("JPEG")
 
 
 @pytest.fixture
@@ -212,6 +244,53 @@ def test_invalid_file(client, learner, media_root, filename, content):
     assert_error(response, 400, "INVALID_FILE", INVALID_FILE_MESSAGE)
     assert learner.profile_image_key is None
     assert uploaded_files(media_root) == []
+
+
+def corrupt_middle(content: bytes) -> bytes:
+    middle = len(content) // 2
+    return content[:middle] + bytes(64) + content[middle + 64 :]
+
+
+@pytest.mark.parametrize(
+    ("filename", "content"),
+    [
+        ("head-only.png", PNG_SIGNATURE + bytes(range(256))),
+        ("head-only.jpg", JPEG_SIGNATURE + bytes(range(256))),
+        ("cut.png", NOISE_PNG[: len(NOISE_PNG) // 2]),
+        ("cut.jpg", NOISE_JPG[: len(NOISE_JPG) // 2]),
+        ("broken-middle.png", corrupt_middle(NOISE_PNG)),
+        ("real-jpeg.png", NOISE_JPG),
+        ("real-png.jpeg", NOISE_PNG),
+        ("too-many-pixels.png", image_bytes("PNG", size=(5001, 5000), mode="1")),
+        ("bomb-header.png", png_claiming_size(30000, 30000)),
+    ],
+    ids=[
+        "png-header-then-garbage",
+        "jpeg-header-then-garbage",
+        "truncated-png",
+        "truncated-jpeg",
+        "corrupted-middle-png",
+        "jpeg-content-png-ext",
+        "png-content-jpeg-ext",
+        "over-25m-pixels",
+        "header-claims-30000x30000",
+    ],
+)
+def test_broken_or_oversized_image_is_rejected(client, learner, media_root, filename, content):
+    response = put_file(client, learner, filename, content)
+
+    assert_error(response, 400, "INVALID_FILE", INVALID_FILE_MESSAGE)
+    assert learner.profile_image_key is None
+    assert uploaded_files(media_root) == []
+
+
+def test_image_at_pixel_limit_is_allowed(client, learner, media_root):
+    content = image_bytes("PNG", size=(5000, 5000), mode="1")
+
+    response = put_file(client, learner, "limit.png", content)
+
+    assert response.status_code == 200
+    assert (media_root / response.json()["data"]["profileImageKey"]).read_bytes() == content
 
 
 def test_file_field_sent_as_text_is_invalid(client, learner, media_root):
