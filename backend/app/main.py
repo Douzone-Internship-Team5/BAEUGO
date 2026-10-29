@@ -6,6 +6,7 @@ from app.core.errors import register_error_handlers
 from app.routers import (
     admin,
     auth,
+    codes,
     courses,
     feed,
     goals,
@@ -33,6 +34,7 @@ register_error_handlers(app)
 
 app.include_router(health.router, prefix=settings.api_prefix)
 app.include_router(auth.router, prefix=settings.api_prefix)
+app.include_router(codes.router, prefix=settings.api_prefix)
 app.include_router(instructor.router, prefix=settings.api_prefix)
 app.include_router(feed.router, prefix=settings.api_prefix)
 app.include_router(courses.router, prefix=settings.api_prefix)
