@@ -2,6 +2,9 @@ from dataclasses import dataclass
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, Request, Response
+from python_multipart.exceptions import FormParserError
+from starlette.exceptions import HTTPException as StarletteHTTPException
+from starlette.formparsers import MultiPartException
 
 from app.core.auth import CurrentUser, InstructorUser, LearnerUser
 from app.core.database import DbSession
@@ -70,7 +73,17 @@ async def read_profile_image_input(request: Request) -> ProfileImageInput:
             ) from err
         return ProfileImageInput(preset_id=body.get("presetId") if isinstance(body, dict) else None)
     if content_type == "multipart/form-data":
-        form = await request.form()
+        try:
+            form = await request.form()
+        # Starlette는 일부 multipart 오류만 영어 메시지 400으로 바꾸고,
+        # 본문이 아예 multipart가 아니면 python-multipart 예외가 그대로 올라와 500이 된다.
+        except (StarletteHTTPException, MultiPartException, FormParserError) as err:
+            raise AppError(
+                400,
+                "VALIDATION_ERROR",
+                "입력값을 확인해 주세요.",
+                fields={"request": "multipart 형식이 올바르지 않습니다."},
+            ) from err
         # multipart에서는 file만 받는다. presetId는 file과 같이 왔는지 가리는 데만 쓴다.
         if form.get("file") is None:
             return ProfileImageInput()

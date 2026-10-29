@@ -41,8 +41,14 @@ def update_profile_image(
     if (preset_id is None) == (file is None):
         raise AppError(400, "VALIDATION_ERROR", CHOICE_MESSAGE)
     if file is not None:
+        # file 자리에 파일이 아닌 글자가 오면 파일 형식 문제가 아니라 요청 형식 문제로 본다.
         if not isinstance(file, UploadFile):
-            raise AppError(400, "INVALID_FILE", INVALID_FILE_MESSAGE)
+            raise AppError(
+                400,
+                "VALIDATION_ERROR",
+                "입력값을 확인해 주세요.",
+                fields={"file": "파일을 첨부해 주세요."},
+            )
         return upload_profile_image(db, user, file)
     # JSON의 true/false도 파이썬에서는 int로 취급되므로 따로 막는다.
     if isinstance(preset_id, bool) or not isinstance(preset_id, int):

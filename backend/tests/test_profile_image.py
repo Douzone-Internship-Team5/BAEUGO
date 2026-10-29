@@ -293,12 +293,13 @@ def test_image_at_pixel_limit_is_allowed(client, learner, media_root):
     assert (media_root / response.json()["data"]["profileImageKey"]).read_bytes() == content
 
 
-def test_file_field_sent_as_text_is_invalid(client, learner, media_root):
+def test_file_field_sent_as_text(client, learner, media_root):
     response = client.put(
         PROFILE_IMAGE_URL, files={"file": (None, "not a file")}, headers=auth_header(learner.id)
     )
 
-    assert_error(response, 400, "INVALID_FILE", INVALID_FILE_MESSAGE)
+    error = assert_error(response, 400, "VALIDATION_ERROR", "입력값을 확인해 주세요.")
+    assert error["fields"] == {"file": "파일을 첨부해 주세요."}
 
 
 # ---------- 둘 다 없음 · 둘 다 있음 ----------
@@ -354,6 +355,73 @@ def test_broken_json(client, learner, media_root):
 
     error = assert_error(response, 400, "VALIDATION_ERROR", "입력값을 확인해 주세요.")
     assert error["fields"] == {"request": "JSON 형식이 올바르지 않습니다."}
+
+
+# ---------- 형식이 깨진 요청 (500이 나면 안 된다) ----------
+
+BOUNDARY = "XyZ"
+FILE_PART_HEADER = (
+    f'--{BOUNDARY}\r\nContent-Disposition: form-data; name="file"; filename="a.png"\r\n'
+    "Content-Type: image/png\r\n\r\n"
+).encode()
+
+
+@pytest.mark.parametrize(
+    ("content_type", "body"),
+    [
+        ("multipart/form-data", FILE_PART_HEADER + PNG_BYTES),
+        (f"multipart/form-data; boundary={BOUNDARY}", b"not multipart at all"),
+        (
+            f"multipart/form-data; boundary={BOUNDARY}",
+            f"--{BOUNDARY}\r\nContent-Type: image/png\r\n\r\n".encode()
+            + PNG_BYTES
+            + f"\r\n--{BOUNDARY}--\r\n".encode(),
+        ),
+    ],
+    ids=["no-boundary", "garbage-body", "no-content-disposition"],
+)
+def test_broken_multipart(client, learner, media_root, content_type, body):
+    response = client.put(
+        PROFILE_IMAGE_URL,
+        content=body,
+        headers={"Content-Type": content_type, **auth_header(learner.id)},
+    )
+
+    error = assert_error(response, 400, "VALIDATION_ERROR", "입력값을 확인해 주세요.")
+    assert error["fields"] == {"request": "multipart 형식이 올바르지 않습니다."}
+    assert uploaded_files(media_root) == []
+
+
+@pytest.mark.parametrize(
+    ("content_type", "body"),
+    [
+        # 닫는 boundary 없이 중간에 끊긴 본문은 file이 없는 요청으로 처리된다.
+        (f"multipart/form-data; boundary={BOUNDARY}", FILE_PART_HEADER + PNG_BYTES[:100]),
+        ("multipart/form-data; boundary=", b"--\r\n"),
+        ("application/json", b'{"presetId": "\xff\xfe"}'),
+        ("application/json", b""),
+        ("application/x-www-form-urlencoded", b"presetId=1"),
+        ("application/octet-stream", PNG_BYTES),
+    ],
+    ids=[
+        "truncated-multipart",
+        "empty-boundary",
+        "json-invalid-utf8",
+        "json-empty-body",
+        "form-urlencoded",
+        "octet-stream",
+    ],
+)
+def test_other_malformed_requests_are_400(client, learner, media_root, content_type, body):
+    response = client.put(
+        PROFILE_IMAGE_URL,
+        content=body,
+        headers={"Content-Type": content_type, **auth_header(learner.id)},
+    )
+
+    assert response.status_code == 400
+    assert response.json()["error"]["code"] == "VALIDATION_ERROR"
+    assert learner.profile_image_key is None
 
 
 # ---------- 인증 ----------
