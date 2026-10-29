@@ -4,6 +4,7 @@ from pydantic import Field, field_validator
 from pydantic_core import PydanticCustomError
 
 from app.models.user import Role
+from app.schemas.auth import LoginUser
 from app.schemas.common import CamelModel
 
 
@@ -81,3 +82,27 @@ class OnboardingResponse(CamelModel):
     active_mode: str
     onboarded: bool
     onboarding: LearnerOnboarding | InstructorOnboarding | None
+
+
+class MeResponse(LoginUser):
+    """A-5. 결제·정산 라벨은 현재 모드에 맞는 것 하나만 응답에 넣는다(라우터에서 exclude_unset)."""
+
+    profile_image_key: str | None
+    profile_image_url: str | None
+    demo_payment_label: str | None = None
+    demo_settlement_label: str | None = None
+    onboarding: LearnerOnboarding | InstructorOnboarding | None
+
+
+# 명세 문구로 응답하려고 길이·형식 검사는 스키마가 아니라 서비스에서 한다.
+class PasswordChangeRequest(CamelModel):
+    current_password: str | None = None
+    new_password: str | None = None
+
+
+class DemoLabelRequest(CamelModel):
+    label: str | None = None
+
+
+class DemoLabelResponse(CamelModel):
+    label: str | None
