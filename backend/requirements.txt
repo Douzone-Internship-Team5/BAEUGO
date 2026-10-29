@@ -6,6 +6,8 @@ alembic==1.14.0
 pydantic==2.10.4
 pydantic-settings==2.7.0
 python-multipart==0.0.20
+# 업로드한 대표 사진이 실제로 열리는 이미지인지 확인한다.
+Pillow==11.0.0
 bcrypt==4.2.1
 PyJWT==2.10.1
 # starlette 0.41.3과 맞추기 위해 고정 (최신 anyio는 테스트 클라이언트에서 DeprecationWarning 발생)
