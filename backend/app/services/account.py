@@ -12,10 +12,12 @@ from app.services.storage import get_profile_image_url
 from app.services.user import is_onboarded
 
 MIN_PASSWORD_LENGTH = 8
-MAX_PASSWORD_LENGTH = 255
+# bcrypt는 앞 72바이트만 해시에 쓰므로, 더 길면 뒷부분이 달라도 같은 비밀번호로 처리된다.
+MAX_PASSWORD_BYTES = 72
 MAX_LABEL_LENGTH = 100
 
 PASSWORD_RULE_MESSAGE = "새 비밀번호는 8자 이상 영문과 숫자를 포함해야 합니다."
+PASSWORD_TOO_LONG_MESSAGE = "새 비밀번호는 72바이트(영문 72자, 한글 24자) 이하여야 합니다."
 SAME_PASSWORD_MESSAGE = "새 비밀번호는 현재 비밀번호와 달라야 합니다."
 PAYMENT_LABEL_MESSAGE = "결제수단 표시값은 1~100자 이내여야 합니다."
 SETTLEMENT_LABEL_MESSAGE = "정산계좌 표시값은 1~100자 이내여야 합니다."
@@ -47,6 +49,13 @@ def change_password(db: Session, user: User, body: PasswordChangeRequest) -> Non
     new_password = body.new_password or ""
     if not is_valid_password(new_password):
         raise AppError(400, "VALIDATION_ERROR", PASSWORD_RULE_MESSAGE)
+    if len(new_password.encode()) > MAX_PASSWORD_BYTES:
+        raise AppError(
+            400,
+            "VALIDATION_ERROR",
+            PASSWORD_TOO_LONG_MESSAGE,
+            fields={"newPassword": PASSWORD_TOO_LONG_MESSAGE},
+        )
     if new_password == current_password:
         raise AppError(
             400,
@@ -61,7 +70,7 @@ def change_password(db: Session, user: User, body: PasswordChangeRequest) -> Non
 
 def is_valid_password(password: str) -> bool:
     return (
-        MIN_PASSWORD_LENGTH <= len(password) <= MAX_PASSWORD_LENGTH
+        len(password) >= MIN_PASSWORD_LENGTH
         and re.search(r"[A-Za-z]", password) is not None
         and re.search(r"[0-9]", password) is not None
     )

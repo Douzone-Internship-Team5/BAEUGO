@@ -13,6 +13,7 @@ LOGIN_URL = "/api/v1/auth/login"
 SEED_PASSWORD = "baeugo1234"
 
 PASSWORD_RULE_MESSAGE = "새 비밀번호는 8자 이상 영문과 숫자를 포함해야 합니다."
+PASSWORD_TOO_LONG_MESSAGE = "새 비밀번호는 72바이트(영문 72자, 한글 24자) 이하여야 합니다."
 SAME_PASSWORD_MESSAGE = "새 비밀번호는 현재 비밀번호와 달라야 합니다."
 PAYMENT_LABEL_MESSAGE = "결제수단 표시값은 1~100자 이내여야 합니다."
 SETTLEMENT_LABEL_MESSAGE = "정산계좌 표시값은 1~100자 이내여야 합니다."
@@ -232,8 +233,8 @@ def test_wrong_current_password(client, get_user, body):
 
 @pytest.mark.parametrize(
     "new_password",
-    ["abc1234", "abcdefgh", "12345678", "", None, "a1" * 128],
-    ids=["too-short", "no-digit", "no-letter", "empty", "null", "too-long"],
+    ["abc1234", "abcdefgh", "12345678", "", None],
+    ids=["too-short", "no-digit", "no-letter", "empty", "null"],
 )
 def test_new_password_rule_violation(client, get_user, new_password):
     user = get_user("learner2@baeugo.test")
@@ -254,6 +255,40 @@ def test_new_password_missing(client, get_user):
     )
 
     assert_error(response, 400, "VALIDATION_ERROR", PASSWORD_RULE_MESSAGE)
+
+
+@pytest.mark.parametrize(
+    "new_password",
+    ["a1" * 36, "가" * 22 + "a1"],
+    ids=["ascii-72-bytes", "korean-72-bytes"],
+)
+def test_new_password_up_to_72_bytes_is_allowed(client, get_user, new_password):
+    user = get_user("learner2@baeugo.test")
+
+    response = change_password(
+        client, user, {"currentPassword": SEED_PASSWORD, "newPassword": new_password}
+    )
+
+    assert response.status_code == 204
+    assert login(client, user.email, new_password).status_code == 200
+
+
+@pytest.mark.parametrize(
+    "new_password",
+    ["a1" * 36 + "b", "가" * 24 + "a1", "a1" * 128],
+    ids=["ascii-73-bytes", "korean-74-bytes", "256-chars"],
+)
+def test_new_password_over_72_bytes(client, get_user, new_password):
+    user = get_user("learner2@baeugo.test")
+    original_hash = user.password_hash
+
+    response = change_password(
+        client, user, {"currentPassword": SEED_PASSWORD, "newPassword": new_password}
+    )
+
+    error = assert_error(response, 400, "VALIDATION_ERROR", PASSWORD_TOO_LONG_MESSAGE)
+    assert error["fields"] == {"newPassword": PASSWORD_TOO_LONG_MESSAGE}
+    assert user.password_hash == original_hash
 
 
 def test_new_password_same_as_current(client, get_user):
