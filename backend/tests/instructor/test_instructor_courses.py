@@ -660,8 +660,7 @@ def test_b2_b4_multiple_unit_quizzes_and_enrollment_recalculation(
     assert sec_detail["unitQuiz"]["quizId"] == active_unit_q.id
     assert res_detail.json()["data"]["publishCheck"]["isReady"] is True
 
-    # [B-4] 재공개 시 미해결 오답(REVIEW_NEEDED)이 있으므로
-    # COMPLETED -> IN_PROGRESS 전환 (first_completed_at 보존)
+    # 학습 항목이 그대로이면 복습 오답만으로 기존 수료를 취소하지 않는다.
     res_pub = client.put(
         f"/api/v1/instructor/courses/{course.id}/status",
         json={"status": "PUBLISHED"},
@@ -669,11 +668,12 @@ def test_b2_b4_multiple_unit_quizzes_and_enrollment_recalculation(
     assert res_pub.status_code == 200
     db_session.expire_all()
     updated_enr = db_session.get(Enrollment, enr.id)
-    assert updated_enr.status == "IN_PROGRESS"
-    assert updated_enr.current_completed_at is None
+    assert updated_enr.status == "COMPLETED"
+    assert updated_enr.current_completed_at is not None
+    completed_at = updated_enr.current_completed_at
     assert updated_enr.first_completed_at is not None
 
-    # 오답 해결(CORRECT) 후 다시 EDITING -> PUBLISHED 전환 시 IN_PROGRESS -> COMPLETED 전환 검증
+    # 복습 오답 해결 후 재공개해도 현재 수료 시각을 새로 덮어쓰지 않는다.
     client.put(f"/api/v1/instructor/courses/{course.id}/status", json={"status": "EDITING"})
     q_rec_db = db_session.get(QuestionRecord, q_rec.id)
     q_rec_db.status = "CORRECT"
@@ -687,7 +687,7 @@ def test_b2_b4_multiple_unit_quizzes_and_enrollment_recalculation(
     db_session.expire_all()
     updated_enr2 = db_session.get(Enrollment, enr.id)
     assert updated_enr2.status == "COMPLETED"
-    assert updated_enr2.current_completed_at is not None
+    assert updated_enr2.current_completed_at == completed_at
 
 
 def test_b3_course_json_and_strict_validation(client: TestClient, db_session: Session):

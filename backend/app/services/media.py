@@ -181,14 +181,15 @@ def _verify_video_stream_access(db: Session, video: Video, user: User | None) ->
         ).all()
     )
 
-    # 커리큘럼 순서대로 선행 학습 영상 및 단위 확인 퀴즈 완료 여부 검증 (C-5 feat/learning 동일 기준)
+    # C-5와 동일하게 커리큘럼 순서대로 선행 영상 및 단위 확인 퀴즈 완료 여부를 검증한다.
     active_sections = sorted(
         (s for s in course.sections if s.is_active),
         key=lambda s: (s.sort_order, s.id),
     )
     active_section_ids = {s.id for s in active_sections}
     active_lessons = [
-        v for v in course.videos
+        v
+        for v in course.videos
         if v.is_active and v.video_type == "LESSON" and v.section_id in active_section_ids
     ]
     active_unit_quizzes = [q for q in course.quizzes if q.is_active and q.quiz_type == "UNIT"]
