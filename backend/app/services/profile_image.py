@@ -11,6 +11,8 @@ from app.services.storage import get_profile_image_url, save_upload_file
 
 PROFILE_PRESET_IDS = (1, 2, 3, 4)
 MAX_PROFILE_IMAGE_SIZE = 5 * 1024 * 1024
+# 받는 확장자 → 저장할 확장자. jpg 계열은 .jpg로 통일한다.
+SAVED_EXTENSIONS = {".jpg": ".jpg", ".jpeg": ".jpg", ".png": ".png"}
 # 확장자만 바꾼 파일을 막으려고 파일 앞부분(매직 바이트)도 확인한다.
 IMAGE_SIGNATURES = {
     ".jpg": b"\xff\xd8\xff",
@@ -54,16 +56,20 @@ def set_preset_image(db: Session, user: User, preset_id: int) -> ProfileImageRes
 
 
 def upload_profile_image(db: Session, user: User, file: UploadFile) -> ProfileImageResponse:
-    validate_image_file(file)
+    extension = validate_image_file(file)
+    # save_upload_file은 파일 이름에서 확장자를 정하므로, 통일한 확장자로 이름을 바꿔서 넘긴다.
+    file.filename = f"profile{extension}"
     # 매번 다른 키로 저장해서 브라우저가 예전 사진을 캐시로 보여주지 않게 한다.
     key = save_upload_file(file, "profiles", f"user_{user.id}")
     return save_profile_image_key(db, user, key)
 
 
-def validate_image_file(file: UploadFile) -> None:
-    signature = IMAGE_SIGNATURES.get(Path(file.filename or "").suffix.lower())
-    if signature is None:
+def validate_image_file(file: UploadFile) -> str:
+    """검사를 통과하면 저장할 확장자(.jpg 또는 .png)를 돌려준다."""
+    extension = SAVED_EXTENSIONS.get(Path(file.filename or "").suffix.lower())
+    if extension is None:
         raise AppError(400, "INVALID_FILE", INVALID_FILE_MESSAGE)
+    signature = IMAGE_SIGNATURES[extension]
 
     file.file.seek(0, os.SEEK_END)
     size = file.file.tell()
@@ -72,6 +78,7 @@ def validate_image_file(file: UploadFile) -> None:
     file.file.seek(0)
     if not 0 < size <= MAX_PROFILE_IMAGE_SIZE or head != signature:
         raise AppError(400, "INVALID_FILE", INVALID_FILE_MESSAGE)
+    return extension
 
 
 def save_profile_image_key(db: Session, user: User, key: str) -> ProfileImageResponse:

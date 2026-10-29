@@ -129,9 +129,14 @@ def test_operator_can_set_preset(client, get_user, media_root):
     [
         ("avatar.png", PNG_BYTES, "png", "image/png"),
         ("photo.jpg", JPG_BYTES, "jpg", "image/jpeg"),
+        # jpg 계열은 저장 키 확장자를 .jpg로 통일한다.
+        ("photo.jpeg", JPG_BYTES, "jpg", "image/jpeg"),
         ("PHOTO.JPG", JPG_BYTES, "jpg", "image/jpeg"),
+        ("PHOTO.JPEG", JPG_BYTES, "jpg", "image/jpeg"),
+        ("Photo.Jpeg", JPG_BYTES, "jpg", "image/jpeg"),
+        ("AVATAR.PNG", PNG_BYTES, "png", "image/png"),
     ],
-    ids=["png", "jpg", "upper-case-extension"],
+    ids=["png", "jpg", "jpeg", "upper-jpg", "upper-jpeg", "mixed-case-jpeg", "upper-png"],
 )
 def test_upload_saves_unique_key_and_serves_image(
     client, learner, media_root, filename, content, extension, media_type
@@ -181,7 +186,9 @@ def test_upload_exactly_5mb_is_allowed(client, learner, media_root):
         ("fake.png", JPG_BYTES),
         ("anim.gif", GIF_BYTES),
         ("gif-renamed.png", GIF_BYTES),
-        ("photo.jpeg", JPG_BYTES),
+        ("fake.jpeg", PNG_BYTES),
+        ("FAKE.JPEG", b"this is not an image"),
+        ("fake.PNG", JPG_BYTES),
         ("noext", PNG_BYTES),
         ("empty.png", b""),
     ],
@@ -192,7 +199,9 @@ def test_upload_exactly_5mb_is_allowed(client, learner, media_root):
         "jpg-content-png-ext",
         "gif",
         "gif-content-png-ext",
-        "jpeg-ext",
+        "png-content-jpeg-ext",
+        "text-as-upper-jpeg",
+        "jpg-content-upper-png-ext",
         "no-ext",
         "empty",
     ],
