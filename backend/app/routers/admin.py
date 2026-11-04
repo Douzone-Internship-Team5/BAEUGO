@@ -9,6 +9,7 @@ from app.schemas.admin import (
     AdminCourseItem,
     AdminUserDetail,
     AdminUserItem,
+    RepublishResponse,
     UnpublishRequest,
     UnpublishResponse,
 )
@@ -57,6 +58,13 @@ def unpublish_course(
     return DataResponse(
         data=admin_course_service.unpublish_course(db, operator, course_id, body.reason)
     )
+
+
+@router.post("/courses/{course_id}/republish", response_model=DataResponse[RepublishResponse])
+def republish_course(
+    course_id: int, _: OperatorUser, db: DbSession
+) -> DataResponse[RepublishResponse]:
+    return DataResponse(data=admin_course_service.republish_course(db, course_id))
 
 
 @router.get("/users", response_model=DataResponse[PageData[AdminUserItem]])
