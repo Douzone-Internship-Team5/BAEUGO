@@ -1,4 +1,10 @@
-from app.schemas.auth import LoginRequest, LoginResponse, LoginUser
+from app.schemas.auth import (
+    LoginRequest,
+    LoginResponse,
+    LoginUser,
+    SignupRequest,
+    SignupResponse,
+)
 from app.schemas.common import CamelModel, CursorPageData, DataResponse, PageData
 from app.schemas.course import (
     CourseCounts,
@@ -101,6 +107,8 @@ __all__ = [
     "SectionDeleteResponseData",
     "SectionResponseData",
     "SectionUpdateRequest",
+    "SignupRequest",
+    "SignupResponse",
     "StatsComparison",
     "StatsPeriod",
     "StatsSummary",

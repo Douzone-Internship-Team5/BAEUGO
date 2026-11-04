@@ -1,11 +1,70 @@
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.core.errors import AppError
-from app.core.security import create_access_token, verify_password
-from app.models.user import User
-from app.schemas.auth import LoginResponse, LoginUser
+from app.core.security import create_access_token, hash_password, verify_password
+from app.models.user import AccountType, User, UserRole
+from app.schemas.auth import LoginResponse, LoginUser, SignupRequest, SignupResponse
 from app.services.user import get_role_names, is_onboarded
+
+
+def signup(db: Session, body: SignupRequest) -> SignupResponse:
+    existing_user = db.scalar(select(User).where(User.email == body.email))
+    if existing_user is not None:
+        raise AppError(
+            409,
+            "CONFLICT",
+            "이미 가입된 이메일입니다.",
+            fields={"email": "이미 가입된 이메일입니다."},
+        )
+
+    name = body.email.split("@")[0][:50]
+    active_mode = body.role.value if body.role else None
+
+    user = User(
+        email=body.email,
+        password_hash=hash_password(body.password),
+        name=name,
+        account_type=AccountType.MEMBER,
+        active_mode=active_mode,
+    )
+    db.add(user)
+
+    try:
+        db.flush()
+        if body.role:
+            db.add(UserRole(user_id=user.id, role=body.role.value))
+            db.flush()
+        db.commit()
+    except IntegrityError as exc:
+        db.rollback()
+        raise AppError(
+            409,
+            "CONFLICT",
+            "이미 가입된 이메일입니다.",
+            fields={"email": "이미 가입된 이메일입니다."},
+        ) from exc
+
+    db.expire(user, ["roles"])
+    db.refresh(user)
+
+    login_user = build_login_user(user)
+    token = create_access_token(user.id)
+
+    return SignupResponse(
+        id=user.id,
+        user_id=user.id,
+        email=user.email,
+        name=user.name,
+        account_type=user.account_type,
+        role=user.active_mode,
+        active_mode=user.active_mode,
+        roles=get_role_names(user),
+        onboarded=login_user.onboarded,
+        access_token=token,
+        user=login_user,
+    )
 
 
 def login(db: Session, email: str, password: str) -> LoginResponse:
