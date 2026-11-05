@@ -2,14 +2,16 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from urllib.parse import parse_qs, urlsplit
 
 import jwt
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy.orm import Session
 
+from app.core import security
 from app.core.config import get_settings
-from app.core.security import JWT_ALGORITHM
+from app.core.security import JWT_ALGORITHM, create_access_token
 from app.models import (
     QuizAttempt,
     Role,
@@ -34,6 +36,157 @@ def write_media_file(media_root: Path, storage_key: str, content: bytes) -> Path
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_bytes(content)
     return target
+
+
+@pytest.fixture
+def playback_video(db, get_user, media_root):
+    owner = get_user("instructor1@baeugo.test")
+    learner = get_user("learner2@baeugo.test")
+    course = make_course(db, owner, status="PUBLISHED")
+    section = make_section(db, course)
+    video = make_video(db, course, section=section, sort_order=1)
+    enrollment = enroll(db, learner, course)
+    write_media_file(media_root, video.video_storage_key, b"0123456789")
+    db.commit()
+    return learner, video, enrollment
+
+
+def test_playback_url_supports_headerless_full_and_range_requests(client, playback_video):
+    learner, video, _ = playback_video
+    response = client.post(
+        f"/api/v1/videos/{video.id}/playback-url", headers=auth_header(learner.id)
+    )
+    assert response.status_code == 200
+    assert response.headers["cache-control"] == "no-store"
+    data = response.json()["data"]
+    assert data["videoId"] == video.id
+    expires_at = datetime.fromisoformat(data["expiresAt"].replace("Z", "+00:00"))
+    assert 290 <= (expires_at - datetime.now(UTC)).total_seconds() <= 300
+    url = data["playbackUrl"]
+    full = client.get(url)
+    assert full.status_code == 200
+    assert full.content == b"0123456789"
+    assert full.headers["cache-control"] == "private, no-store"
+    partial = client.get(url, headers={"Range": "bytes=2-5"})
+    assert partial.status_code == 206
+    assert partial.content == b"2345"
+    assert partial.headers["content-range"] == "bytes 2-5/10"
+    assert client.get(url, headers={"Range": "bytes=20-"}).status_code == 416
+
+    schema = client.get("/openapi.json").json()
+    operation = schema["paths"]["/api/v1/videos/{id}/playback-url"]["post"]
+    assert operation["security"] == [{"HTTPBearer": []}]
+    assert {"200", "401", "403", "404"} <= operation["responses"].keys()
+    properties = schema["components"]["schemas"]["PlaybackUrlData"]["properties"]
+    assert set(properties) == {"videoId", "playbackUrl", "expiresAt"}
+
+
+def test_playback_url_requires_login_and_existing_access_checks(
+    client, db, get_user, media_root, playback_video
+):
+    learner, video, enrollment = playback_video
+    path = f"/api/v1/videos/{video.id}/playback-url"
+    assert client.post(path).status_code == 401
+    assert client.post(path, headers=auth_header(999999)).status_code == 401
+    outsider = get_user("learner1@baeugo.test")
+    assert client.post(path, headers=auth_header(outsider.id)).status_code == 403
+    missing = client.post("/api/v1/videos/999999/playback-url", headers=auth_header(learner.id))
+    assert missing.status_code == 404
+
+    locked = make_video(db, video.course, section=video.section, sort_order=2)
+    write_media_file(media_root, locked.video_storage_key, b"locked")
+    db.commit()
+    locked_response = client.post(
+        f"/api/v1/videos/{locked.id}/playback-url", headers=auth_header(learner.id)
+    )
+    assert locked_response.status_code == 403
+
+    video.course.status = "DRAFT"
+    db.commit()
+    assert client.post(path, headers=auth_header(learner.id)).status_code == 403
+    for user_id in (video.course.instructor_id, get_user("admin@baeugo.test").id):
+        issued = client.post(path, headers=auth_header(user_id))
+        assert issued.status_code == 200
+        assert client.get(issued.json()["data"]["playbackUrl"]).status_code == 200
+
+    (media_root / video.video_storage_key).unlink()
+    assert client.post(path, headers=auth_header(video.course.instructor_id)).status_code == 404
+
+
+def test_playback_token_cannot_authorize_other_video_or_login_api(client, playback_video):
+    learner, video, _ = playback_video
+    issued = client.post(
+        f"/api/v1/videos/{video.id}/playback-url", headers=auth_header(learner.id)
+    ).json()["data"]
+    token = parse_qs(urlsplit(issued["playbackUrl"]).query)["token"][0]
+    other_video = client.get(f"/api/v1/videos/{video.id + 1}/stream", params={"token": token})
+    assert other_video.status_code == 401
+    login_response = client.get("/api/v1/users/me", headers={"Authorization": f"Bearer {token}"})
+    assert login_response.status_code == 401
+    path = f"/api/v1/videos/{video.id}/stream"
+    for invalid in ("", "bad-token", create_access_token(learner.id)):
+        assert client.get(path, params={"token": invalid}).status_code == 401
+
+
+def test_expired_playback_url_requires_reissue(client, playback_video, monkeypatch):
+    learner, video, _ = playback_video
+
+    class EarlierDatetime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return datetime.now(tz) - timedelta(minutes=6)
+
+    path = f"/api/v1/videos/{video.id}/playback-url"
+    headers = auth_header(learner.id)
+    with monkeypatch.context() as patch:
+        patch.setattr(security, "datetime", EarlierDatetime)
+        expired = client.post(path, headers=headers).json()["data"]["playbackUrl"]
+    assert client.get(expired, headers={"Range": "bytes=0-1"}).status_code == 401
+    renewed = client.post(path, headers=headers).json()["data"]["playbackUrl"]
+    assert client.get(renewed, headers={"Range": "bytes=0-1"}).status_code == 206
+
+
+@pytest.mark.parametrize(
+    ("change", "expected_status"),
+    [
+        ("unenroll", 403),
+        ("course_hidden", 403),
+        ("video_inactive", 404),
+        ("section_inactive", 404),
+        ("user_inactive", 401),
+        ("user_deleted", 401),
+        ("instructor_mode", 403),
+        ("video_locked", 403),
+    ],
+)
+def test_playback_url_rechecks_permission_after_issuance(
+    client, db, playback_video, change, expected_status
+):
+    learner, video, enrollment = playback_video
+    url = client.post(
+        f"/api/v1/videos/{video.id}/playback-url", headers=auth_header(learner.id)
+    ).json()["data"]["playbackUrl"]
+    if change == "unenroll":
+        db.delete(enrollment)
+    elif change == "course_hidden":
+        video.course.status = "DRAFT"
+    elif change == "video_inactive":
+        video.is_active = False
+    elif change == "section_inactive":
+        video.section.is_active = False
+    elif change == "user_inactive":
+        learner.is_active = False
+    elif change == "user_deleted":
+        learner.deleted_at = datetime.now(UTC)
+    elif change == "instructor_mode":
+        learner.active_mode = Role.INSTRUCTOR
+    else:
+        video.sort_order = 2
+        make_video(db, video.course, section=video.section, sort_order=1)
+    db.commit()
+    # 실제 요청처럼 변경된 커리큘럼을 DB에서 새로 읽도록 관계 캐시를 비운다.
+    db.expire_all()
+    assert client.get(url, headers={"Range": "bytes=0-1"}).status_code == expected_status
 
 
 def test_m_openapi_contract_matches_spec(client: TestClient):

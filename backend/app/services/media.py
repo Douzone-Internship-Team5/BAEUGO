@@ -11,11 +11,12 @@ from sqlalchemy.exc import OperationalError, ProgrammingError
 from sqlalchemy.orm import Session, joinedload
 
 from app.core.errors import AppError, error_body
-from app.core.security import decode_access_token
+from app.core.security import create_playback_token, decode_access_token, decode_playback_token
 from app.models.course import Course
 from app.models.learning import Enrollment, QuizAttempt, VideoProgress
 from app.models.user import AccountType, Role, User
 from app.models.video import Video
+from app.schemas.media import PlaybackUrlData
 from app.services.storage import get_media_dir
 
 VIDEO_FORBIDDEN_MESSAGE = "영상 시청 권한이 없거나 잠금 상태입니다."
@@ -269,10 +270,7 @@ def _parse_byte_range(range_header: str, file_size: int) -> tuple[int, int] | No
     return start, end
 
 
-def stream_video(db: Session, request: Request, video_id: int) -> Response:
-    """[M-1] 영상 미디어 스트리밍 서빙 (HTTP Range 지원)."""
-    user = resolve_optional_user(request, db)
-
+def _load_streamable_video(db: Session, video_id: int, user: User | None) -> tuple[Video, Path]:
     try:
         video = db.scalar(
             select(Video)
@@ -307,6 +305,30 @@ def stream_video(db: Session, request: Request, video_id: int) -> Response:
     if not file_path.is_file():
         raise AppError(404, "NOT_FOUND", VIDEO_NOT_FOUND_MESSAGE)
 
+    return video, file_path
+
+
+def issue_playback_url(db: Session, request: Request, video_id: int, user: User) -> PlaybackUrlData:
+    _load_streamable_video(db, video_id, user)
+    token, expires_at = create_playback_token(user.id, video_id)
+    playback_url = request.url_for("stream_video", id=video_id).include_query_params(token=token)
+    return PlaybackUrlData(video_id=video_id, playback_url=str(playback_url), expires_at=expires_at)
+
+
+def stream_video(
+    db: Session, request: Request, video_id: int, *, token: str | None = None
+) -> Response:
+    """[M-1] 기존 Bearer 인증 또는 영상 전용 서명 URL로 HTTP Range 재생을 제공한다."""
+    if token is None:
+        user = resolve_optional_user(request, db)
+    else:
+        user_id = decode_playback_token(token, video_id)
+        user = db.get(User, user_id) if user_id is not None else None
+        if user is None or not user.is_login_allowed:
+            raise AppError(401, "UNAUTHORIZED", "유효하지 않거나 만료된 재생 URL입니다.")
+
+    # 발급 이후 계정·수강·공개·잠금 상태가 바뀔 수 있으므로 매 요청마다 다시 확인한다.
+    _, file_path = _load_streamable_video(db, video_id, user)
     file_size = file_path.stat().st_size
     ext = file_path.suffix.lower()
     media_type = VIDEO_CONTENT_TYPES.get(ext, "video/mp4")
@@ -318,6 +340,8 @@ def stream_video(db: Session, request: Request, video_id: int) -> Response:
             status_code=200,
             media_type=media_type,
             headers={
+                "Cache-Control": "private, no-store",
+                "Referrer-Policy": "no-referrer",
                 "Accept-Ranges": "bytes",
                 "Content-Length": str(file_size),
             },
@@ -330,7 +354,10 @@ def stream_video(db: Session, request: Request, video_id: int) -> Response:
             content=error_body(
                 "RANGE_NOT_SATISFIABLE", "요청한 스트리밍 범위가 유효하지 않습니다."
             ),
-            headers={"Content-Range": f"bytes */{file_size}"},
+            headers={
+                "Content-Range": f"bytes */{file_size}",
+                "Cache-Control": "private, no-store",
+            },
         )
 
     start, end = parsed_range
@@ -340,6 +367,8 @@ def stream_video(db: Session, request: Request, video_id: int) -> Response:
         status_code=206,
         media_type=media_type,
         headers={
+            "Cache-Control": "private, no-store",
+            "Referrer-Policy": "no-referrer",
             "Accept-Ranges": "bytes",
             "Content-Range": f"bytes {start}-{end}/{file_size}",
             "Content-Length": str(content_length),
