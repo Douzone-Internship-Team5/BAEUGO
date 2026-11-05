@@ -10,6 +10,10 @@ SIGNUP_URL = "/api/v1/auth/signup"
 LOGIN_URL = "/api/v1/auth/login"
 ME_URL = "/api/v1/users/me"
 
+VALID_PASSWORD = "password123"
+PASSWORD_RULE_MESSAGE = "비밀번호는 8자 이상 영문과 숫자를 포함해야 합니다."
+PASSWORD_TOO_LONG_MESSAGE = "비밀번호는 72바이트(영문 72자, 한글 24자) 이하여야 합니다."
+
 
 def signup(client, **data):
     return client.post(SIGNUP_URL, json=data)
@@ -18,29 +22,26 @@ def signup(client, **data):
 # 1. 수강자(LEARNER) 회원가입 성공
 def test_signup_learner_success(client, get_user):
     email = "new_learner@baeugo.test"
-    password = "simplepassword"
 
-    response = signup(client, email=email, password=password, role="LEARNER")
+    response = signup(client, email=email, password=VALID_PASSWORD, role="LEARNER")
 
     assert response.status_code == 201
     data = response.json()["data"]
+    assert set(data.keys()) == {"accessToken", "user"}
 
-    # 응답 스키마 검증
-    assert data["email"] == email
-    assert data["role"] == "LEARNER"
-    assert data["activeMode"] == "LEARNER"
-    assert data["roles"] == ["LEARNER"]
-    assert data["accountType"] == "MEMBER"
-    assert data["onboarded"] is False
-    assert data["name"] == "new_learner"  # 이메일 ID 기본값 사용
-    assert "accessToken" in data
-    assert decode_access_token(data["accessToken"]) == data["id"]
-    assert data["user"]["email"] == email
-    assert data["user"]["role"] == "LEARNER"
+    user = data["user"]
+    assert user["email"] == email
+    assert user["role"] == "LEARNER"
+    assert user["activeMode"] == "LEARNER"
+    assert user["roles"] == ["LEARNER"]
+    assert user["accountType"] == "MEMBER"
+    assert user["onboarded"] is False
+    assert user["name"] == "new_learner"  # 이메일 ID 기본값 사용
+    assert decode_access_token(data["accessToken"]) == user["id"]
 
     # DB 저장 확인
     db_user = get_user(email)
-    assert db_user.id == data["id"]
+    assert db_user.id == user["id"]
     assert db_user.active_mode == "LEARNER"
     assert [r.role for r in db_user.roles] == ["LEARNER"]
 
@@ -48,18 +49,17 @@ def test_signup_learner_success(client, get_user):
 # 2. 강사(INSTRUCTOR) 회원가입 성공
 def test_signup_instructor_success(client, get_user):
     email = "new_instructor@baeugo.test"
-    password = "pw"
 
-    response = signup(client, email=email, password=password, role="INSTRUCTOR")
+    response = signup(client, email=email, password=VALID_PASSWORD, role="INSTRUCTOR")
 
     assert response.status_code == 201
-    data = response.json()["data"]
+    user = response.json()["data"]["user"]
 
-    assert data["email"] == email
-    assert data["role"] == "INSTRUCTOR"
-    assert data["activeMode"] == "INSTRUCTOR"
-    assert data["roles"] == ["INSTRUCTOR"]
-    assert data["onboarded"] is False
+    assert user["email"] == email
+    assert user["role"] == "INSTRUCTOR"
+    assert user["activeMode"] == "INSTRUCTOR"
+    assert user["roles"] == ["INSTRUCTOR"]
+    assert user["onboarded"] is False
 
     db_user = get_user(email)
     assert db_user.active_mode == "INSTRUCTOR"
@@ -69,18 +69,17 @@ def test_signup_instructor_success(client, get_user):
 # 3. 역할 미선택 회원가입 성공 (이메일과 비밀번호만 입력)
 def test_signup_without_role_success(client, get_user):
     email = "no_role_user@baeugo.test"
-    password = "123"
 
-    response = signup(client, email=email, password=password)
+    response = signup(client, email=email, password=VALID_PASSWORD)
 
     assert response.status_code == 201
-    data = response.json()["data"]
+    user = response.json()["data"]["user"]
 
-    assert data["email"] == email
-    assert data["role"] is None
-    assert data["activeMode"] is None
-    assert data["roles"] == []
-    assert data["onboarded"] is False
+    assert user["email"] == email
+    assert user["role"] is None
+    assert user["activeMode"] is None
+    assert user["roles"] == []
+    assert user["onboarded"] is False
 
 
 # 4. 프론트엔드 대소문자 무관 role 전달 처리 (LEARNER, learner, INSTRUCTOR, instructor)
@@ -95,26 +94,26 @@ def test_signup_without_role_success(client, get_user):
 )
 def test_signup_role_case_handling(client, input_role, expected_role):
     email = f"user_{expected_role}_{input_role.lower()}@baeugo.test"
-    response = signup(client, email=email, password="pw", role=input_role)
+    response = signup(client, email=email, password=VALID_PASSWORD, role=input_role)
 
     assert response.status_code == 201
-    data = response.json()["data"]
-    assert data["role"] == expected_role
-    assert data["activeMode"] == expected_role
-    assert data["roles"] == [expected_role]
+    user = response.json()["data"]["user"]
+    assert user["role"] == expected_role
+    assert user["activeMode"] == expected_role
+    assert user["roles"] == [expected_role]
 
 
 # 5. 빈 문자열("") 또는 공백 역할 전달 시 역할 미선택(None)으로 정상 처리
 @pytest.mark.parametrize("empty_role", ["", "   "])
 def test_signup_empty_role_treated_as_none(client, empty_role):
     email = f"empty_role_{len(empty_role)}@baeugo.test"
-    res = signup(client, email=email, password="pw", role=empty_role)
+    res = signup(client, email=email, password=VALID_PASSWORD, role=empty_role)
 
     assert res.status_code == 201
-    data = res.json()["data"]
-    assert data["role"] is None
-    assert data["activeMode"] is None
-    assert data["roles"] == []
+    user = res.json()["data"]["user"]
+    assert user["role"] is None
+    assert user["activeMode"] is None
+    assert user["roles"] == []
 
 
 # 6. 이메일 공백 제거 및 소문자 정규화
@@ -122,53 +121,94 @@ def test_signup_trims_and_lowercases_email(client):
     email_with_spaces = "  Spaces.Case@Baeugo.TEST  "
     expected_email = "spaces.case@baeugo.test"
 
-    response = signup(client, email=email_with_spaces, password="pw")
+    response = signup(client, email=email_with_spaces, password=VALID_PASSWORD)
 
     assert response.status_code == 201
-    assert response.json()["data"]["email"] == expected_email
+    assert response.json()["data"]["user"]["email"] == expected_email
 
 
 # 7. 가입 직후 동일 이메일/비밀번호로 로그인 성공
 def test_signup_and_immediate_login(client):
     email = "immediate_login@baeugo.test"
-    password = "password123"
 
-    signup_res = signup(client, email=email, password=password, role="LEARNER")
+    signup_res = signup(client, email=email, password=VALID_PASSWORD, role="LEARNER")
     assert signup_res.status_code == 201
 
-    login_res = client.post(LOGIN_URL, json={"email": email, "password": password})
+    login_res = client.post(LOGIN_URL, json={"email": email, "password": VALID_PASSWORD})
     assert login_res.status_code == 200
     login_data = login_res.json()["data"]
-    assert login_data["user"]["email"] == email
-    assert login_data["user"]["role"] == "LEARNER"
+    assert login_data["user"] == signup_res.json()["data"]["user"]
 
 
-# 8. 단순 비밀번호 허용 (복잡도/글자수 제한 없음)
+# 8. 유효한 비밀번호(8자 이상 영문+숫자, 72바이트 이하) 허용
 @pytest.mark.parametrize(
-    "simple_pw",
+    "valid_pw",
     [
-        "1",  # 1글자
-        "!@#$%^&*()_+",  # 특수문자
-        "한글비밀번호1234",  # 한글 비밀번호
-        "very-secure-and-clean-password",
+        "password123",
+        "한글비밀번호1234",
+        "a1" * 36,  # 72바이트 (ASCII)
+        "가" * 22 + "a1",  # 72바이트 (한글 66바이트 + 영문·숫자 2바이트 = 68바이트 <= 72바이트)
     ],
-    ids=["one-char", "special-chars", "korean-chars", "normal"],
+    ids=["normal", "korean-with-alnum", "ascii-72-bytes", "korean-72-bytes"],
 )
-def test_signup_simple_password_no_complexity_restriction(client, simple_pw):
+def test_signup_valid_password_up_to_72_bytes(client, valid_pw):
     email = f"pw_test_{uuid.uuid4().hex[:8]}@baeugo.test"
-    res = signup(client, email=email, password=simple_pw, role="LEARNER")
+    res = signup(client, email=email, password=valid_pw, role="LEARNER")
 
     assert res.status_code == 201
-    assert res.json()["data"]["email"] == email
+    assert res.json()["data"]["user"]["email"] == email
 
     # 해당 비밀번호로 즉시 로그인 가능 확인
-    login_res = client.post(LOGIN_URL, json={"email": email, "password": simple_pw})
+    login_res = client.post(LOGIN_URL, json={"email": email, "password": valid_pw})
     assert login_res.status_code == 200
+
+
+# 8-1. 비밀번호 복잡도 규칙 위반 실패 (8자 이상 영문+숫자 미충족 시 400 VALIDATION_ERROR)
+@pytest.mark.parametrize(
+    "invalid_pw",
+    [
+        "abc1234",  # 7자 (8자 미만)
+        "abcdefgh",  # 숫자 없음
+        "12345678",  # 영문 없음
+        "1",  # 1글자
+        "!@#$%^&*()_+",  # 특수문자만
+    ],
+    ids=["too-short", "no-digit", "no-letter", "one-char", "special-chars-only"],
+)
+def test_signup_password_rule_violation_fails(client, invalid_pw):
+    email = f"pw_rule_{uuid.uuid4().hex[:8]}@baeugo.test"
+    res = signup(client, email=email, password=invalid_pw, role="LEARNER")
+
+    assert res.status_code == 400
+    error = res.json()["error"]
+    assert error["code"] == "VALIDATION_ERROR"
+    assert error["message"] == PASSWORD_RULE_MESSAGE
+    assert error["fields"] == {"password": PASSWORD_RULE_MESSAGE}
+
+
+# 8-2. 72바이트 초과 비밀번호 실패 (400 VALIDATION_ERROR)
+@pytest.mark.parametrize(
+    "long_pw",
+    [
+        "a1" * 36 + "b",  # 73바이트 (ASCII)
+        "가" * 24 + "a1",  # 74바이트 (한글 72바이트 + 영문·숫자 2바이트)
+    ],
+    ids=["ascii-73-bytes", "korean-74-bytes"],
+)
+def test_signup_password_over_72_bytes_fails(client, long_pw):
+    email = f"pw_long_{uuid.uuid4().hex[:8]}@baeugo.test"
+    res = signup(client, email=email, password=long_pw, role="LEARNER")
+
+    assert res.status_code == 400
+    error = res.json()["error"]
+    assert error["code"] == "VALIDATION_ERROR"
+    assert error["message"] == PASSWORD_TOO_LONG_MESSAGE
+    assert error["fields"] == {"password": PASSWORD_TOO_LONG_MESSAGE}
 
 
 # 9. 중복 이메일 가입 실패 (409 CONFLICT)
 def test_signup_duplicate_email_fails(client):
-    response = signup(client, email="learner1@baeugo.test", password="newpassword")
+    response = signup(client, email="learner1@baeugo.test", password=VALID_PASSWORD)
 
     assert response.status_code == 409
     error = response.json()["error"]
@@ -179,17 +219,17 @@ def test_signup_duplicate_email_fails(client):
 # 10. 동일 이메일 연속 가입 시 두 번째 가입 실패 (409 CONFLICT)
 def test_signup_consecutive_duplicate_fails(client):
     email = "duplicate_test@baeugo.test"
-    res1 = signup(client, email=email, password="123")
+    res1 = signup(client, email=email, password=VALID_PASSWORD)
     assert res1.status_code == 201
 
-    res2 = signup(client, email=email, password="456")
+    res2 = signup(client, email=email, password="otherpassword123")
     assert res2.status_code == 409
     assert res2.json()["error"]["code"] == "CONFLICT"
 
 
 # 11. 이메일 미입력 실패 (400 VALIDATION_ERROR)
 def test_signup_missing_email_fails(client):
-    response = client.post(SIGNUP_URL, json={"password": "123"})
+    response = client.post(SIGNUP_URL, json={"password": VALID_PASSWORD})
 
     assert response.status_code == 400
     assert response.json()["error"]["code"] == "VALIDATION_ERROR"
@@ -198,7 +238,7 @@ def test_signup_missing_email_fails(client):
 
 # 12. id/userId 등 임의의 별칭 필드로 전송 시 email 누락으로 실패 (400 VALIDATION_ERROR)
 def test_signup_alias_field_not_supported(client):
-    response = client.post(SIGNUP_URL, json={"id": "alias@baeugo.test", "password": "123"})
+    response = client.post(SIGNUP_URL, json={"id": "alias@baeugo.test", "password": VALID_PASSWORD})
 
     assert response.status_code == 400
     assert response.json()["error"]["code"] == "VALIDATION_ERROR"
@@ -225,7 +265,7 @@ def test_signup_empty_password_fails(client):
 
 # 15. 유효하지 않은 이메일 형식 실패 (400 VALIDATION_ERROR)
 def test_signup_invalid_email_format_fails(client):
-    response = signup(client, email="not-an-email", password="123")
+    response = signup(client, email="not-an-email", password=VALID_PASSWORD)
 
     assert response.status_code == 400
     error = response.json()["error"]
@@ -236,7 +276,9 @@ def test_signup_invalid_email_format_fails(client):
 # 16. 수강자/강사 외 유효하지 않은 역할 선택 실패 (400 VALIDATION_ERROR)
 @pytest.mark.parametrize("invalid_role", ["OPERATOR", "ADMIN", "SUPERUSER", "OTHER"])
 def test_signup_invalid_role_fails(client, invalid_role):
-    response = signup(client, email="invalid_role@baeugo.test", password="123", role=invalid_role)
+    response = signup(
+        client, email="invalid_role@baeugo.test", password=VALID_PASSWORD, role=invalid_role
+    )
 
     assert response.status_code == 400
     error = response.json()["error"]
@@ -255,7 +297,8 @@ def test_signup_invalid_role_fails(client, invalid_role):
 )
 def test_extra_routes_not_registered(client, wrong_url):
     response = client.post(
-        wrong_url, json={"email": "path_test@baeugo.test", "password": "123", "role": "LEARNER"}
+        wrong_url,
+        json={"email": "path_test@baeugo.test", "password": VALID_PASSWORD, "role": "LEARNER"},
     )
     assert response.status_code == 404
 
@@ -263,7 +306,7 @@ def test_extra_routes_not_registered(client, wrong_url):
 # 18. 가입 토큰으로 /users/me 호출 정상 동작
 def test_signup_token_allows_me_query(client):
     email = "flow_user@baeugo.test"
-    res = signup(client, email=email, password="123", role="LEARNER")
+    res = signup(client, email=email, password=VALID_PASSWORD, role="LEARNER")
     assert res.status_code == 201
 
     token = res.json()["data"]["accessToken"]
@@ -278,7 +321,7 @@ def test_signup_token_allows_me_query(client):
 # 19. 역할 없이 가입한 후 /me/role 엔드포인트로 역할 사후 선택 가능 여부
 def test_signup_without_role_can_select_role_later(client):
     email = "later_role@baeugo.test"
-    res = signup(client, email=email, password="123")
+    res = signup(client, email=email, password=VALID_PASSWORD)
     assert res.status_code == 201
 
     token = res.json()["data"]["accessToken"]
@@ -301,7 +344,7 @@ def test_signup_integrity_error_handled_as_conflict(client, monkeypatch):
         raise IntegrityError("mock unique violation", orig=Exception("unique key"), params={})
 
     monkeypatch.setattr("sqlalchemy.orm.Session.commit", fake_commit)
-    res = signup(client, email="race_condition@baeugo.test", password="pw")
+    res = signup(client, email="race_condition@baeugo.test", password=VALID_PASSWORD)
 
     assert res.status_code == 409
     assert res.json()["error"]["code"] == "CONFLICT"

@@ -1,3 +1,5 @@
+import re
+
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
@@ -5,11 +7,41 @@ from sqlalchemy.orm import Session
 from app.core.errors import AppError
 from app.core.security import create_access_token, hash_password, verify_password
 from app.models.user import AccountType, User, UserRole
-from app.schemas.auth import LoginResponse, LoginUser, SignupRequest, SignupResponse
+from app.schemas.auth import LoginResponse, LoginUser, SignupRequest
 from app.services.user import get_role_names, is_onboarded
 
+MIN_PASSWORD_LENGTH = 8
+# bcrypt는 앞 72바이트만 해시에 쓰므로, 더 길면 뒷부분이 달라도 같은 비밀번호로 처리된다.
+MAX_PASSWORD_BYTES = 72
 
-def signup(db: Session, body: SignupRequest) -> SignupResponse:
+PASSWORD_RULE_MESSAGE = "비밀번호는 8자 이상 영문과 숫자를 포함해야 합니다."
+PASSWORD_TOO_LONG_MESSAGE = "비밀번호는 72바이트(영문 72자, 한글 24자) 이하여야 합니다."
+
+
+def is_valid_password(password: str) -> bool:
+    return (
+        len(password) >= MIN_PASSWORD_LENGTH
+        and re.search(r"[A-Za-z]", password) is not None
+        and re.search(r"[0-9]", password) is not None
+    )
+
+
+def signup(db: Session, body: SignupRequest) -> LoginResponse:
+    if not is_valid_password(body.password):
+        raise AppError(
+            400,
+            "VALIDATION_ERROR",
+            PASSWORD_RULE_MESSAGE,
+            fields={"password": PASSWORD_RULE_MESSAGE},
+        )
+    if len(body.password.encode()) > MAX_PASSWORD_BYTES:
+        raise AppError(
+            400,
+            "VALIDATION_ERROR",
+            PASSWORD_TOO_LONG_MESSAGE,
+            fields={"password": PASSWORD_TOO_LONG_MESSAGE},
+        )
+
     existing_user = db.scalar(select(User).where(User.email == body.email))
     if existing_user is not None:
         raise AppError(
@@ -35,7 +67,6 @@ def signup(db: Session, body: SignupRequest) -> SignupResponse:
         db.flush()
         if body.role:
             db.add(UserRole(user_id=user.id, role=body.role.value))
-            db.flush()
         db.commit()
     except IntegrityError as exc:
         db.rollback()
@@ -49,22 +80,7 @@ def signup(db: Session, body: SignupRequest) -> SignupResponse:
     db.expire(user, ["roles"])
     db.refresh(user)
 
-    login_user = build_login_user(user)
-    token = create_access_token(user.id)
-
-    return SignupResponse(
-        id=user.id,
-        user_id=user.id,
-        email=user.email,
-        name=user.name,
-        account_type=user.account_type,
-        role=user.active_mode,
-        active_mode=user.active_mode,
-        roles=get_role_names(user),
-        onboarded=login_user.onboarded,
-        access_token=token,
-        user=login_user,
-    )
+    return LoginResponse(access_token=create_access_token(user.id), user=build_login_user(user))
 
 
 def login(db: Session, email: str, password: str) -> LoginResponse:

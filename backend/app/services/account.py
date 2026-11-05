@@ -1,19 +1,14 @@
-import re
-
 from sqlalchemy.orm import Session
 
 from app.core.errors import AppError
 from app.core.security import hash_password, verify_password
 from app.models.user import Role, User
 from app.schemas.user import DemoLabelResponse, MeResponse, PasswordChangeRequest
-from app.services.auth import build_login_user
+from app.services.auth import MAX_PASSWORD_BYTES, build_login_user, is_valid_password
 from app.services.onboarding import get_onboarding
 from app.services.storage import get_profile_image_url
 from app.services.user import is_onboarded
 
-MIN_PASSWORD_LENGTH = 8
-# bcrypt는 앞 72바이트만 해시에 쓰므로, 더 길면 뒷부분이 달라도 같은 비밀번호로 처리된다.
-MAX_PASSWORD_BYTES = 72
 MAX_LABEL_LENGTH = 100
 
 PASSWORD_RULE_MESSAGE = "새 비밀번호는 8자 이상 영문과 숫자를 포함해야 합니다."
@@ -66,14 +61,6 @@ def change_password(db: Session, user: User, body: PasswordChangeRequest) -> Non
 
     user.password_hash = hash_password(new_password)
     db.commit()
-
-
-def is_valid_password(password: str) -> bool:
-    return (
-        len(password) >= MIN_PASSWORD_LENGTH
-        and re.search(r"[A-Za-z]", password) is not None
-        and re.search(r"[0-9]", password) is not None
-    )
 
 
 def get_payment_label(user: User) -> DemoLabelResponse:
