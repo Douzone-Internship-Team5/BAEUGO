@@ -428,7 +428,7 @@ def test_q2_midnight_cumulative_activity_and_duplicate_submission(
     assert db.scalar(select(func.count()).select_from(StudyActivitySession)) == 1
 
 
-def test_completed_course_retake_keeps_completion_and_updates_wrong_notes(
+def test_completed_course_retake_keeps_completion_and_wrong_notes(
     client, db, get_user, monkeypatch
 ):
     freeze_clock(monkeypatch)
@@ -441,18 +441,22 @@ def test_completed_course_retake_keeps_completion_and_updates_wrong_notes(
     assert post_answer(client, learner, final.id, answer_body(final_attempt)).status_code == 200
     db.refresh(enrollment)
     first_at, current_at = enrollment.first_completed_at, enrollment.current_completed_at
+    notes_before = client.get("/api/v1/me/quiz-notes", headers=headers).json()
 
     retake = learner_quiz.get_course_attempt(db, learner.id, course.id, "FINAL", None)
     assert retake.attempt_no == 2
     wrong = post_answer(client, learner, final.id, answer_body(retake, choice=2))
     assert wrong.status_code == 200
+    assert not wrong.json()["data"]["isCorrect"]
     assert wrong.json()["data"]["isCourseCompleted"]
-    assert wrong.json()["data"]["questionRecordStatus"] == "REVIEW_NEEDED"
+    assert wrong.json()["data"]["questionRecordStatus"] == "CORRECT"
+    assert not wrong.json()["data"]["hasUnresolvedWrongAfterFinal"]
+    assert client.get("/api/v1/me/quiz-notes", headers=headers).json() == notes_before
     completion = client.get(f"/api/v1/courses/{course.id}/completion", headers=headers)
     assert completion.json()["data"]["isCompleted"]
-    assert completion.json()["data"]["unresolvedWrongCount"] == 1
+    assert completion.json()["data"]["unresolvedWrongCount"] == 0
     notes = client.get("/api/v1/me/quiz-notes?status=REVIEW_NEEDED", headers=headers)
-    assert notes.json()["data"]["counts"]["reviewNeeded"] == 1
+    assert notes.json()["data"]["counts"]["reviewNeeded"] == 0
     listed = client.get("/api/v1/me/enrollments?status=COMPLETED", headers=headers)
     assert listed.json()["data"]["enrollments"][0]["courseId"] == course.id
     assert admin_users.build_learning_summary(db, learner).completed_count == 1
@@ -488,12 +492,86 @@ def test_completed_course_retake_keeps_completion_and_updates_wrong_notes(
     assert enrollment.status == "IN_PROGRESS"
     assert enrollment.current_completed_at is None
     assert enrollment.first_completed_at == first_at
+    # 재학습 상태에서는 최초 수료 이력이 있어도 보관함을 다시 갱신한다.
     complete_video(db, enrollment, added)
+    unit_retake = learner_quiz.get_unit_attempt(db, learner.id, section.id)
+    wrong_again = post_answer(client, learner, unit.id, answer_body(unit_retake, choice=2))
+    assert wrong_again.json()["data"]["questionRecordStatus"] == "REVIEW_NEEDED"
+    assert not wrong_again.json()["data"]["isCourseCompleted"]
     assert not learner_quiz.get_completion(db, learner.id, course.id).is_completed
     review = learner_quiz.get_course_attempt(db, learner.id, course.id, "WRONG_REVIEW", None)
     corrected = post_answer(client, learner, 0, answer_body(review))
     assert corrected.json()["data"]["isCourseCompleted"]
     assert corrected.json()["data"]["questionRecordStatus"] == "CORRECT"
+
+
+@pytest.mark.parametrize("attempt_type", ["UNIT", "FINAL", "WRONG_REVIEW"])
+@pytest.mark.parametrize("choice", [1, 2])
+def test_completed_practice_preserves_existing_wrong_record(
+    client, db, get_user, monkeypatch, attempt_type, choice
+):
+    freeze_clock(monkeypatch)
+    learner, course, section, _, unit, final, enrollment, attempt = prepare_attempt(
+        db, get_user, question_count=1
+    )
+    assert post_answer(client, learner, unit.id, answer_body(attempt)).status_code == 200
+    final_attempt = learner_quiz.get_course_attempt(db, learner.id, course.id, "FINAL", None)
+    assert post_answer(client, learner, final.id, answer_body(final_attempt)).status_code == 200
+
+    # 이전 정책에서 수료 후 오답이 남아 있는 경우도 연습으로 변경하지 않는다.
+    record = db.scalar(
+        select(QuestionRecord).where(
+            QuestionRecord.enrollment_id == enrollment.id,
+            QuestionRecord.question_id == final_attempt.questions[0].question_id,
+        )
+    )
+    record.status, record.wrong_count, record.resolved_at = "REVIEW_NEEDED", 3, None
+    db.commit()
+    headers = auth_header(learner.id)
+    before = client.get("/api/v1/me/quiz-notes", headers=headers).json()
+    if attempt_type == "UNIT":
+        practice = learner_quiz.get_unit_attempt(db, learner.id, section.id)
+    else:
+        practice = learner_quiz.get_course_attempt(db, learner.id, course.id, attempt_type, None)
+    response = post_answer(
+        client, learner, practice.quiz_id or 0, answer_body(practice, choice=choice)
+    )
+    assert response.status_code == 200
+    data = response.json()["data"]
+    assert data["isCorrect"] == (choice == 1)
+    assert data["correctChoiceNo"] == 1
+    assert data["explanation"]
+    assert data["attemptStatus"] == "SUBMITTED"
+    assert data["isCourseCompleted"]
+    expected_status = "CORRECT" if attempt_type == "UNIT" else "REVIEW_NEEDED"
+    assert data["questionRecordStatus"] == expected_status
+    assert client.get("/api/v1/me/quiz-notes", headers=headers).json() == before
+    assert db.get(QuestionAnswer, data["answerId"]).is_correct == (choice == 1)
+
+
+def test_completed_practice_does_not_create_missing_record(client, db, get_user, monkeypatch):
+    freeze_clock(monkeypatch)
+    learner, course, _, _, unit, final, enrollment, attempt = prepare_attempt(
+        db, get_user, question_count=1
+    )
+    assert post_answer(client, learner, unit.id, answer_body(attempt)).status_code == 200
+    final_attempt = learner_quiz.get_course_attempt(db, learner.id, course.id, "FINAL", None)
+    assert post_answer(client, learner, final.id, answer_body(final_attempt)).status_code == 200
+    record = db.scalar(
+        select(QuestionRecord).where(
+            QuestionRecord.enrollment_id == enrollment.id,
+            QuestionRecord.question_id == final_attempt.questions[0].question_id,
+        )
+    )
+    db.delete(record)
+    db.commit()
+    before_count = db.scalar(select(func.count()).select_from(QuestionRecord))
+    retake = learner_quiz.get_course_attempt(db, learner.id, course.id, "FINAL", None)
+    response = post_answer(client, learner, final.id, answer_body(retake, choice=2))
+    assert response.status_code == 200
+    assert response.json()["data"]["questionRecordStatus"] is None
+    assert response.json()["data"]["isCourseCompleted"]
+    assert db.scalar(select(func.count()).select_from(QuestionRecord)) == before_count
 
 
 def test_quiz_validation_messages_and_openapi_constraints(client, db, get_user):

@@ -310,13 +310,18 @@ def grade_answer(
             QuestionRecord.enrollment_id == enrollment.id, QuestionRecord.question_id == question.id
         )
     )
-    if record is None:
-        record = QuestionRecord(enrollment_id=enrollment.id, question_id=question.id, wrong_count=0)
-        db.add(record)
-    record.status = "CORRECT" if is_correct else "REVIEW_NEEDED"
-    record.last_answer_id = answer.id
-    record.wrong_count += int(not is_correct)
-    record.resolved_at = now if is_correct else None
+    # 현재 수료 상태의 재응시는 연습으로 채점만 하고 보관함 기록을 보존한다.
+    # 재공개로 IN_PROGRESS가 된 강좌는 다시 기존 오답 처리 규칙을 적용한다.
+    if enrollment.status != "COMPLETED":
+        if record is None:
+            record = QuestionRecord(
+                enrollment_id=enrollment.id, question_id=question.id, wrong_count=0
+            )
+            db.add(record)
+        record.status = "CORRECT" if is_correct else "REVIEW_NEEDED"
+        record.last_answer_id = answer.id
+        record.wrong_count += int(not is_correct)
+        record.resolved_at = now if is_correct else None
     remaining = [entry for entry in items if entry.id != item.id and entry.answer is None]
     if not remaining:
         attempt.status = "SUBMITTED"
@@ -346,7 +351,7 @@ def grade_answer(
         is_correct=is_correct,
         correct_choice_no=question.correct_choice_no,
         explanation=question.explanation,
-        question_record_status=record.status,
+        question_record_status=record.status if record is not None else None,
         attempt_status=attempt.status,
         next_order_no=remaining[0].order_no if remaining else None,
         has_unresolved_wrong_after_final=(
