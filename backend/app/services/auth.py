@@ -1,5 +1,3 @@
-import re
-
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
@@ -10,23 +8,13 @@ from app.models.user import AccountType, User, UserRole
 from app.schemas.auth import LoginResponse, LoginUser, SignupRequest
 from app.services.user import get_role_names, is_onboarded
 
-MIN_PASSWORD_LENGTH = 8
-# bcrypt는 앞 72바이트만 해시에 쓰므로, 더 길면 뒷부분이 달라도 같은 비밀번호로 처리된다.
-MAX_PASSWORD_BYTES = 72
-
 PASSWORD_RULE_MESSAGE = "비밀번호는 8자 이상 영문과 숫자를 포함해야 합니다."
 PASSWORD_TOO_LONG_MESSAGE = "비밀번호는 72바이트(영문 72자, 한글 24자) 이하여야 합니다."
 
 
-def is_valid_password(password: str) -> bool:
-    return (
-        len(password) >= MIN_PASSWORD_LENGTH
-        and re.search(r"[A-Za-z]", password) is not None
-        and re.search(r"[0-9]", password) is not None
-    )
-
-
 def signup(db: Session, body: SignupRequest) -> LoginResponse:
+    from app.services.account import MAX_PASSWORD_BYTES, is_valid_password
+
     if not is_valid_password(body.password):
         raise AppError(
             400,
