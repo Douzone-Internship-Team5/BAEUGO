@@ -145,7 +145,7 @@ def test_signup_and_immediate_login(client):
     "valid_pw",
     [
         "password123",
-        "한글비밀번호1234",
+        "한글비밀번호abc1234",
         "a1" * 36,  # 72바이트 (ASCII)
         "가" * 22 + "a1",  # 72바이트 (한글 66바이트 + 영문·숫자 2바이트 = 68바이트 <= 72바이트)
     ],
