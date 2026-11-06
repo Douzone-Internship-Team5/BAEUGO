@@ -15,6 +15,7 @@ from app.core.auth import (
 )
 from app.core.database import DbSession
 from app.core.errors import AppError
+from app.models.course import INSTRUCTOR_EDITABLE_STATUSES
 from app.models.video import Video, VideoScript
 from app.schemas.common import DataResponse
 from app.schemas.script import (
@@ -58,7 +59,7 @@ def upload_video(
     thumbnail: Annotated[UploadFile | None, File()] = None,
 ):
     course = verify_course_ownership(course_id, current_user.id, db, for_update=True)
-    if course.status not in ("DRAFT", "EDITING"):
+    if course.status not in INSTRUCTOR_EDITABLE_STATUSES:
         raise AppError(
             409, "CONFLICT", "DRAFT 또는 EDITING 상태인 강좌에서만 영상을 편집할 수 있습니다."
         )
@@ -162,7 +163,7 @@ async def update_or_replace_video(
 ):
     video = verify_video_ownership(video_id, current_user.id, db, for_update=True)
     course = video.course
-    if course.status not in ("DRAFT", "EDITING"):
+    if course.status not in INSTRUCTOR_EDITABLE_STATUSES:
         raise AppError(
             409, "CONFLICT", "DRAFT 또는 EDITING 상태인 강좌에서만 영상을 편집할 수 있습니다."
         )
@@ -343,7 +344,7 @@ def delete_video(
 ):
     video = verify_video_ownership(video_id, current_user.id, db, for_update=True)
     course = video.course
-    if course.status not in ("DRAFT", "EDITING"):
+    if course.status not in INSTRUCTOR_EDITABLE_STATUSES:
         raise AppError(
             409, "CONFLICT", "DRAFT 또는 EDITING 상태인 강좌에서만 영상을 편집할 수 있습니다."
         )
@@ -401,7 +402,7 @@ def update_video_script(
 ):
     video = verify_video_ownership(video_id, current_user.id, db, for_update=True)
     course = video.course
-    if course.status not in ("DRAFT", "EDITING"):
+    if course.status not in INSTRUCTOR_EDITABLE_STATUSES:
         raise AppError(
             409,
             "CONFLICT",
@@ -473,7 +474,7 @@ def regenerate_video_script(
 ):
     video = verify_video_ownership(video_id, current_user.id, db, for_update=True)
     course = video.course
-    if course.status not in ("DRAFT", "EDITING"):
+    if course.status not in INSTRUCTOR_EDITABLE_STATUSES:
         raise AppError(
             409,
             "CONFLICT",

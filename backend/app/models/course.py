@@ -35,6 +35,11 @@ if TYPE_CHECKING:
     from app.models.learning import Enrollment
     from app.models.user import User
 
+# 강사가 내용을 고칠 수 있는 강좌 상태.
+# 운영자가 내린 강좌도 강사가 고쳐야 운영자가 다시 공개(OP-6)할 수 있다.
+# 강사의 공개 전환(B-4)은 DRAFT·EDITING만 허용하므로 이 상수를 쓰지 않는다.
+INSTRUCTOR_EDITABLE_STATUSES = ("DRAFT", "EDITING", "OPERATOR_HIDDEN")
+
 
 class Course(Base):
     __tablename__ = "courses"

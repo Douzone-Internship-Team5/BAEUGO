@@ -10,7 +10,7 @@ from app.core.auth import (
 )
 from app.core.database import DbSession
 from app.core.errors import AppError
-from app.models.course import Section
+from app.models.course import INSTRUCTOR_EDITABLE_STATUSES, Section
 from app.models.quiz import Quiz
 from app.schemas.common import DataResponse
 from app.schemas.section import (
@@ -34,7 +34,7 @@ def create_section(
     current_user: InstructorUser,
 ):
     course = verify_course_ownership(req.course_id, current_user.id, db, for_update=True)
-    if course.status not in ("DRAFT", "EDITING"):
+    if course.status not in INSTRUCTOR_EDITABLE_STATUSES:
         raise AppError(
             409, "CONFLICT", "DRAFT 또는 EDITING 상태인 강좌에서만 섹션을 편집할 수 있습니다."
         )
@@ -78,7 +78,7 @@ def update_section(
 ):
     section = verify_section_ownership(section_id, current_user.id, db, for_update=True)
     course = section.course
-    if course.status not in ("DRAFT", "EDITING"):
+    if course.status not in INSTRUCTOR_EDITABLE_STATUSES:
         raise AppError(
             409, "CONFLICT", "DRAFT 또는 EDITING 상태인 강좌에서만 섹션을 편집할 수 있습니다."
         )
@@ -116,7 +116,7 @@ def delete_section(
 ):
     section = verify_section_ownership(section_id, current_user.id, db, for_update=True)
     course = section.course
-    if course.status not in ("DRAFT", "EDITING"):
+    if course.status not in INSTRUCTOR_EDITABLE_STATUSES:
         raise AppError(
             409, "CONFLICT", "DRAFT 또는 EDITING 상태인 강좌에서만 섹션을 편집할 수 있습니다."
         )

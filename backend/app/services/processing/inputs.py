@@ -3,7 +3,7 @@ from dataclasses import asdict
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.models.course import Course, Section
+from app.models.course import INSTRUCTOR_EDITABLE_STATUSES, Course, Section
 from app.models.video import Video, VideoScript
 from app.services.processing.engine.errors import ProcessingError
 from app.services.processing.engine.schemas import (
@@ -30,7 +30,7 @@ def validated_transcript(video: Video, segments) -> Transcript:
 
 def editable_course(db: Session, course_id: int) -> Course:
     course = db.get(Course, course_id)
-    if course is None or course.status not in ("DRAFT", "EDITING"):
+    if course is None or course.status not in INSTRUCTOR_EDITABLE_STATUSES:
         raise ProcessingError("COURSE_NOT_EDITABLE")
     return course
 
