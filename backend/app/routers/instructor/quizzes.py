@@ -13,6 +13,7 @@ from app.core.auth import (
 )
 from app.core.database import DbSession
 from app.core.errors import AppError
+from app.models.course import INSTRUCTOR_EDITABLE_STATUSES
 from app.models.quiz import Question, QuestionChoice, Quiz
 from app.schemas.common import DataResponse
 from app.schemas.quiz import (
@@ -105,7 +106,7 @@ def update_quiz(
     section_id: Annotated[int | None, Query(alias="sectionId")] = None,
 ):
     course = verify_course_ownership(course_id, current_user.id, db, for_update=True)
-    if course.status not in ("DRAFT", "EDITING"):
+    if course.status not in INSTRUCTOR_EDITABLE_STATUSES:
         raise AppError(
             409,
             "CONFLICT",
@@ -258,7 +259,7 @@ def regenerate_unit_quiz(
     ],
 ):
     course = verify_course_ownership(course_id, current_user.id, db, for_update=True)
-    if course.status not in ("DRAFT", "EDITING"):
+    if course.status not in INSTRUCTOR_EDITABLE_STATUSES:
         raise AppError(
             409,
             "CONFLICT",

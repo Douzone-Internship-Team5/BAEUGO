@@ -16,7 +16,7 @@ from app.core.auth import (
 from app.core.database import DbSession
 from app.core.errors import AppError
 from app.models.category import Category, Topic
-from app.models.course import Course, Section
+from app.models.course import INSTRUCTOR_EDITABLE_STATUSES, Course, Section
 from app.models.quiz import Question, Quiz
 from app.schemas.common import DataResponse
 from app.schemas.course import (
@@ -410,7 +410,7 @@ async def update_course(
 ):
     course = verify_course_ownership(course_id, current_user.id, db, for_update=True)
 
-    if course.status not in ("DRAFT", "EDITING"):
+    if course.status not in INSTRUCTOR_EDITABLE_STATUSES:
         raise AppError(
             409,
             "CONFLICT",
