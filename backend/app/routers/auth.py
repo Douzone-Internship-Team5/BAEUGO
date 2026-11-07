@@ -2,11 +2,16 @@ from fastapi import APIRouter, Response
 
 from app.core.auth import CurrentUser
 from app.core.database import DbSession
-from app.schemas.auth import LoginRequest, LoginResponse
+from app.schemas.auth import LoginRequest, LoginResponse, SignupRequest
 from app.schemas.common import DataResponse
 from app.services import auth as auth_service
 
 router = APIRouter(prefix="/auth", tags=["auth"])
+
+
+@router.post("/signup", response_model=DataResponse[LoginResponse], status_code=201)
+def signup(body: SignupRequest, db: DbSession) -> DataResponse[LoginResponse]:
+    return DataResponse(data=auth_service.signup(db, body))
 
 
 @router.post("/login", response_model=DataResponse[LoginResponse])
