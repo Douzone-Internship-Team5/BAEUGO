@@ -160,3 +160,12 @@ class UnpublishResponse(CamelModel):
     closed_by_user_id: int
     closed_reason: str
     closed_at: datetime
+
+
+# ---------- OP-6 강좌 다시 공개 ----------
+
+
+class RepublishResponse(CamelModel):
+    course_id: int
+    status: str
+    published_at: datetime

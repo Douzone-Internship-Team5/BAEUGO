@@ -4,7 +4,7 @@ from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session, joinedload, selectinload
 
 from app.core.errors import AppError
-from app.models import Category, Course, Enrollment, Question, Quiz, User, Video
+from app.models import Category, Course, Enrollment, Question, Quiz, Section, User, Video
 from app.schemas.admin import (
     AdminCourseDetail,
     AdminCourseInstructor,
@@ -13,11 +13,16 @@ from app.schemas.admin import (
     AdminScriptSegment,
     AdminSection,
     AdminVideo,
+    RepublishResponse,
     UnpublishResponse,
 )
 from app.schemas.common import PageData
 from app.schemas.quiz import QuestionItem
 from app.services.admin_users import LIKE_ESCAPE, escape_like
+from app.services.course_service import (
+    recalculate_enrollments_progress,
+    validate_publish_readiness,
+)
 from app.services.storage import get_profile_image_url, get_thumbnail_url, get_video_stream_url
 
 # 운영자는 공개 이력이 있는 강좌만 다룬다. EDITING은 PUBLISHED에서만 넘어오므로 포함하고,
@@ -320,4 +325,47 @@ def unpublish_course(
         closed_by_user_id=course.closed_by_user_id,
         closed_reason=course.closed_reason,
         closed_at=course.closed_at,
+    )
+
+
+# ---------- OP-6 ----------
+
+
+def republish_course(db: Session, course_id: int) -> RepublishResponse:
+    # OP-3과 같이 행을 잠그고, 공개 조건 검사에 필요한 항목은 B-4와 같은 범위로 불러온다.
+    course = db.scalar(
+        select(Course)
+        .where(Course.id == course_id)
+        .with_for_update()
+        .options(
+            selectinload(Course.videos),
+            selectinload(Course.sections).selectinload(Section.videos),
+            selectinload(Course.quizzes)
+            .selectinload(Quiz.questions)
+            .selectinload(Question.choices),
+        )
+        .execution_options(populate_existing=True)
+    )
+    if course is None or course.status not in VISIBLE_STATUSES:
+        raise AppError(404, "NOT_FOUND", COURSE_NOT_FOUND_MESSAGE)
+    if course.status != "OPERATOR_HIDDEN":
+        raise AppError(409, "CONFLICT", "운영자가 비공개 처리한 강좌만 다시 공개할 수 있습니다.")
+
+    is_ready, missing = validate_publish_readiness(course, db)
+    if not is_ready:
+        raise AppError(
+            409, "PUBLISH_NOT_READY", "강좌 공개 조건을 충족하지 못했습니다.", missing=missing
+        )
+
+    # B-4 재공개와 같은 값으로 바꾼다.
+    course.status = "PUBLISHED"
+    course.published_at = datetime.now(UTC)
+    course.closed_by_user_id = None
+    course.closed_at = None
+    course.closed_reason = None
+    recalculate_enrollments_progress(course, db)
+    db.commit()
+
+    return RepublishResponse(
+        course_id=course.id, status=course.status, published_at=course.published_at
     )

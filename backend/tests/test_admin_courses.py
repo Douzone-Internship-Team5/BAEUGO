@@ -2,6 +2,7 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 
+from app.models import QuizAttempt, VideoProgress
 from tests.conftest import auth_header
 from tests.factories import enroll, make_course, make_quiz, make_section, make_video
 
@@ -9,6 +10,7 @@ COURSES_URL = "/api/v1/admin/courses"
 NOW = datetime(2026, 10, 24, 3, 0, tzinfo=UTC)
 LIST_FILTER_MESSAGE = "유효하지 않은 상태 또는 정렬 기준입니다."
 REASON_MESSAGE = "비공개 사유를 1~500자 이내로 입력해 주세요."
+REPUBLISH_CONFLICT_MESSAGE = "운영자가 비공개 처리한 강좌만 다시 공개할 수 있습니다."
 
 
 @pytest.fixture
@@ -533,12 +535,220 @@ def test_unpublish_unknown_course_is_not_found(client, operator_headers):
     assert response.json()["error"]["message"] == "존재하지 않는 강좌입니다."
 
 
+# ---------- OP-6 강좌 다시 공개 ----------
+
+READY_TITLE = "다시 공개할 강좌"
+
+
+@pytest.fixture
+def ready_course(db, get_user) -> dict:
+    """6대 공개 조건을 모두 채운 공개 중 강좌."""
+    course = make_course(db, get_user("instructor1@baeugo.test"), title=READY_TITLE)
+    ot = make_video(db, course, video_type="OT", title="무료 OT", sort_order=0)
+    section = make_section(db, course)
+    lesson = make_video(db, course, section=section)
+    unit_quiz = make_quiz(db, course, section=section, question_count=3)
+    final_quiz = make_quiz(db, course, question_count=3)
+    for video in (ot, lesson):
+        video.transcript_reviewed_at = NOW
+    for quiz in (unit_quiz, final_quiz):
+        quiz.reviewed_at = NOW
+    db.flush()
+    return {
+        "course": course,
+        "section": section,
+        "lesson": lesson,
+        "unit_quiz": unit_quiz,
+        "final_quiz": final_quiz,
+    }
+
+
+def republish(client, headers, course_id):
+    return client.post(f"{COURSES_URL}/{course_id}/republish", headers=headers)
+
+
+def hide(client, headers, course) -> None:
+    response = unpublish(client, headers, course.id, {"reason": "저작권 문제가 있는 영상 포함"})
+    assert response.status_code == 200
+
+
+def test_republish_course_hidden_from_published(client, operator_headers, ready_course):
+    course = ready_course["course"]
+    old_published_at = course.published_at
+    hide(client, operator_headers, course)
+
+    response = republish(client, operator_headers, course.id)
+
+    assert response.status_code == 200
+    data = response.json()["data"]
+    published_at = datetime.fromisoformat(data.pop("publishedAt"))
+    assert data == {"courseId": course.id, "status": "PUBLISHED"}
+    # B-4 재공개와 같이 공개 시각을 새로 기록한다.
+    assert published_at > old_published_at
+    assert (course.status, course.published_at) == ("PUBLISHED", published_at)
+    assert (course.closed_by_user_id, course.closed_at, course.closed_reason) == (None, None, None)
+
+
+def test_republish_course_hidden_while_editing_checks_publish_conditions(
+    client, db, operator_headers, ready_course, get_user
+):
+    course, lesson = ready_course["course"], ready_course["lesson"]
+    # 강사가 수정을 시작해 강의 대본 검수를 다시 해야 하는 중에 운영자가 내린 강좌
+    course.status = "EDITING"
+    course.closed_by_user_id = get_user("instructor1@baeugo.test").id
+    course.closed_at = NOW
+    lesson.transcript_reviewed_at = None
+    db.flush()
+    hide(client, operator_headers, course)
+
+    not_ready = republish(client, operator_headers, course.id)
+
+    assert not_ready.status_code == 409
+    assert not_ready.json()["error"] == {
+        "code": "PUBLISH_NOT_READY",
+        "message": "강좌 공개 조건을 충족하지 못했습니다.",
+        "missing": [f"TRANSCRIPT_NOT_REVIEWED:videoId={lesson.id}"],
+    }
+    assert course.status == "OPERATOR_HIDDEN"
+    assert course.closed_reason == "저작권 문제가 있는 영상 포함"
+
+    lesson.transcript_reviewed_at = NOW
+    db.flush()
+    ready = republish(client, operator_headers, course.id)
+
+    assert ready.status_code == 200
+    assert ready.json()["data"]["status"] == "PUBLISHED"
+    assert (course.closed_by_user_id, course.closed_at, course.closed_reason) == (None, None, None)
+
+
+def test_republished_course_is_visible_to_learners_again(
+    client, operator_headers, ready_course, get_user
+):
+    course = ready_course["course"]
+    new_learner_headers = auth_header(get_user("learner1@baeugo.test").id)
+    hide(client, operator_headers, course)
+
+    def search_titles():
+        response = client.get("/api/v1/courses", params={"q": READY_TITLE})
+        return [item["title"] for item in response.json()["data"]["items"]]
+
+    def course_detail_status():
+        return client.get(f"/api/v1/courses/{course.id}", headers=new_learner_headers).status_code
+
+    def admin_list(status):
+        return titles(list_courses(client, operator_headers, status=status, q=READY_TITLE))
+
+    assert (search_titles(), course_detail_status()) == ([], 403)
+    assert admin_list("OPERATOR_HIDDEN") == [READY_TITLE]
+
+    republish(client, operator_headers, course.id)
+
+    # B-11 탐색, C-1 강좌 상세(미수강자), OP-1 상태 필터
+    assert (search_titles(), course_detail_status()) == ([READY_TITLE], 200)
+    assert admin_list("OPERATOR_HIDDEN") == []
+    assert admin_list("PUBLISHED") == [READY_TITLE]
+
+
+def test_instructor_can_start_editing_after_republish(
+    client, operator_headers, ready_course, get_user
+):
+    course = ready_course["course"]
+    instructor_headers = auth_header(get_user("instructor1@baeugo.test").id)
+    status_url = f"/api/v1/instructor/courses/{course.id}/status"
+    hide(client, operator_headers, course)
+
+    while_hidden = client.put(status_url, json={"status": "EDITING"}, headers=instructor_headers)
+    republish(client, operator_headers, course.id)
+    after = client.put(status_url, json={"status": "EDITING"}, headers=instructor_headers)
+
+    assert while_hidden.status_code == 409
+    assert after.status_code == 200
+    assert after.json()["data"]["status"] == "EDITING"
+
+
+def complete_items(db, enrollment, videos, quizzes) -> None:
+    db.add_all(
+        VideoProgress(
+            enrollment_id=enrollment.id,
+            video_id=video.id,
+            is_completed=True,
+            watched_seconds=video.duration_seconds,
+            last_position_seconds=video.duration_seconds,
+        )
+        for video in videos
+    )
+    db.add_all(
+        QuizAttempt(
+            enrollment_id=enrollment.id,
+            quiz_id=quiz.id,
+            attempt_type=quiz.quiz_type,
+            status="SUBMITTED",
+        )
+        for quiz in quizzes
+    )
+    db.flush()
+
+
+def test_republish_recalculates_progress_of_existing_learners(
+    client, db, operator_headers, ready_course, get_user
+):
+    course, section = ready_course["course"], ready_course["section"]
+    quizzes = (ready_course["unit_quiz"], ready_course["final_quiz"])
+    # 수정 중에 강의가 하나 늘어난 뒤 운영자가 내린 상황
+    new_lesson = make_video(db, course, section=section, title="2강", sort_order=2)
+    new_lesson.transcript_reviewed_at = NOW
+    completed_before = enroll(db, get_user("learner2@baeugo.test"), course, status="COMPLETED")
+    completed_before.first_completed_at = completed_before.current_completed_at = NOW
+    complete_items(db, completed_before, [ready_course["lesson"]], quizzes)
+    finished_all = enroll(db, get_user("learner1@baeugo.test"), course)
+    complete_items(db, finished_all, [ready_course["lesson"], new_lesson], quizzes)
+    hide(client, operator_headers, course)
+
+    response = republish(client, operator_headers, course.id)
+
+    assert response.status_code == 200
+    # 새 강의를 안 본 수료자는 다시 수강 중이 되고, 처음 수료 시각은 남는다.
+    assert (completed_before.status, completed_before.current_completed_at) == (
+        "IN_PROGRESS",
+        None,
+    )
+    assert completed_before.first_completed_at == NOW
+    # 모든 항목을 끝낸 수강생은 수료로 바뀐다.
+    assert finished_all.status == "COMPLETED"
+    assert finished_all.current_completed_at is not None
+
+
+@pytest.mark.parametrize("key", ["excel", "editing"])
+def test_only_hidden_course_can_be_republished(client, operator_headers, courses, key):
+    course = courses[key]
+    status_before = course.status
+
+    response = republish(client, operator_headers, course.id)
+
+    assert response.status_code == 409
+    assert response.json()["error"] == {"code": "CONFLICT", "message": REPUBLISH_CONFLICT_MESSAGE}
+    assert course.status == status_before
+
+
+@pytest.mark.parametrize("course_key", ["draft", None])
+def test_republish_draft_or_unknown_course_is_not_found(
+    client, operator_headers, courses, course_key
+):
+    course_id = courses[course_key].id if course_key else 999999
+
+    response = republish(client, operator_headers, course_id)
+
+    assert response.status_code == 404
+    assert response.json()["error"] == {"code": "NOT_FOUND", "message": "존재하지 않는 강좌입니다."}
+
+
 # ---------- 권한 ----------
 
 PROTECTED_REQUESTS = [
     ("get", COURSES_URL),
     ("get", f"{COURSES_URL}/1"),
     ("post", f"{COURSES_URL}/1/unpublish"),
+    ("post", f"{COURSES_URL}/1/republish"),
 ]
 
 
