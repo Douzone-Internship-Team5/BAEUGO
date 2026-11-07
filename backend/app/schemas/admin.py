@@ -1,8 +1,7 @@
-from datetime import datetime
-
 from pydantic import BaseModel
 
 from app.schemas.common import CamelModel
+from app.schemas.learning import SeoulDatetime
 from app.schemas.quiz import QuestionItem
 from app.schemas.script import ScriptSegment
 from app.schemas.user import InstructorOnboarding, LearnerOnboarding
@@ -21,7 +20,7 @@ class AdminUserItem(CamelModel):
 class LearningSummary(CamelModel):
     in_progress_count: int
     completed_count: int
-    last_studied_at: datetime | None
+    last_studied_at: SeoulDatetime | None
     attendance_streak: int
 
 
@@ -64,9 +63,9 @@ class AdminCourseItem(CamelModel):
     status: str
     price_krw: int
     enrollment_count: int
-    published_at: datetime | None
+    published_at: SeoulDatetime | None
     closed_by_user_id: int | None
-    closed_at: datetime | None
+    closed_at: SeoulDatetime | None
     closed_reason: str | None
 
 
@@ -97,7 +96,7 @@ class AdminVideo(CamelModel):
     thumbnail_storage_key: str | None
     thumbnail_url: str | None
     stt_status: str
-    transcript_reviewed_at: datetime | None
+    transcript_reviewed_at: SeoulDatetime | None
     segments: list[AdminScriptSegment]
 
 
@@ -107,7 +106,7 @@ class AdminQuiz(CamelModel):
     section_id: int | None
     ai_status: str | None
     reviewed_by: int | None
-    reviewed_at: datetime | None
+    reviewed_at: SeoulDatetime | None
     questions: list[QuestionItem]
 
 
@@ -133,8 +132,8 @@ class AdminCourseDetail(CamelModel):
     price_krw: int
     thumbnail_storage_key: str | None
     thumbnail_url: str | None
-    published_at: datetime | None
-    closed_at: datetime | None
+    published_at: SeoulDatetime | None
+    closed_at: SeoulDatetime | None
     closed_reason: str | None
     closed_by_user_id: int | None
     instructor: AdminCourseInstructor
@@ -159,7 +158,7 @@ class UnpublishResponse(CamelModel):
     status: str
     closed_by_user_id: int
     closed_reason: str
-    closed_at: datetime
+    closed_at: SeoulDatetime
 
 
 # ---------- OP-6 강좌 다시 공개 ----------
@@ -168,4 +167,4 @@ class UnpublishResponse(CamelModel):
 class RepublishResponse(CamelModel):
     course_id: int
     status: str
-    published_at: datetime
+    published_at: SeoulDatetime
