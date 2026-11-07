@@ -2,11 +2,14 @@ from datetime import UTC, datetime, timedelta
 
 import jwt
 
+from app.core import security
 from app.core.config import get_settings
 from app.core.security import (
     JWT_ALGORITHM,
     create_access_token,
+    create_playback_token,
     decode_access_token,
+    decode_playback_token,
     hash_password,
     verify_password,
 )
@@ -58,3 +61,30 @@ def test_token_with_non_numeric_sub_is_rejected():
 
 def test_malformed_token_is_rejected():
     assert decode_access_token("not-a-jwt") is None
+
+
+def test_playback_token_is_scoped_to_video_and_separate_from_login():
+    token, expires_at = create_playback_token(42, 7)
+
+    assert decode_playback_token(token, 7) == 42
+    assert decode_playback_token(token, 8) is None
+    assert decode_access_token(token) is None
+    assert decode_playback_token(create_access_token(42), 7) is None
+    assert 295 <= (expires_at - datetime.now(UTC)).total_seconds() <= 300
+
+    header, payload, signature = token.split(".")
+    changed = ("A" if signature[0] != "A" else "B") + signature[1:]
+    assert decode_playback_token(f"{header}.{payload}.{changed}", 7) is None
+    assert decode_playback_token("not-a-jwt", 7) is None
+    assert decode_playback_token("", 7) is None
+
+
+def test_expired_playback_token_is_rejected(monkeypatch):
+    class EarlierDatetime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return datetime.now(tz) - timedelta(minutes=6)
+
+    monkeypatch.setattr(security, "datetime", EarlierDatetime)
+    token, _ = create_playback_token(42, 7)
+    assert decode_playback_token(token, 7) is None

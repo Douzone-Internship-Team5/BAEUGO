@@ -80,7 +80,9 @@ class QuizAnswerData(CamelModel):
     is_correct: bool
     correct_choice_no: int
     explanation: str
-    question_record_status: str
+    question_record_status: str | None = Field(
+        description="보관함 상태. 수료 후 연습에서는 기존 값을 유지하고, 기록이 없으면 null"
+    )
     attempt_status: str
     next_order_no: int | None
     has_unresolved_wrong_after_final: bool
