@@ -304,7 +304,9 @@ def test_learning_summary_counts_enrollments(client, db, operator_headers, get_u
 
     summary = get_detail(client, operator_headers, learner.id).json()["data"]["learningSummary"]
 
-    assert datetime.fromisoformat(summary.pop("lastStudiedAt")) == latest
+    last_studied_at = summary.pop("lastStudiedAt")
+    assert last_studied_at.endswith("+09:00")
+    assert datetime.fromisoformat(last_studied_at) == latest
     assert summary == {"inProgressCount": 2, "completedCount": 1, "attendanceStreak": 0}
 
 

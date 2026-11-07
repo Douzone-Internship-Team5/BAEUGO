@@ -742,6 +742,58 @@ def test_republish_draft_or_unknown_course_is_not_found(
     assert response.json()["error"] == {"code": "NOT_FOUND", "message": "존재하지 않는 강좌입니다."}
 
 
+# ---------- 응답 시각 (Asia/Seoul) ----------
+
+
+def assert_seoul_time(value: str, expected: datetime | None = None) -> None:
+    assert value.endswith("+09:00"), value
+    if expected is not None:
+        assert datetime.fromisoformat(value) == expected
+
+
+def test_course_list_times_are_seoul(client, operator_headers, courses):
+    item = list_courses(client, operator_headers, status="OPERATOR_HIDDEN").json()["data"]["items"][
+        0
+    ]
+
+    assert_seoul_time(item["publishedAt"], courses["report"].published_at)
+    assert_seoul_time(item["closedAt"], NOW)
+
+
+def test_course_detail_times_are_seoul(client, db, operator_headers, full_course):
+    course = full_course["course"]
+    course.status = "OPERATOR_HIDDEN"
+    course.closed_at = NOW
+    full_course["lesson"].transcript_reviewed_at = NOW
+    full_course["unit_quiz"].reviewed_at = NOW
+    db.flush()
+
+    data = client.get(f"{COURSES_URL}/{course.id}", headers=operator_headers).json()["data"]
+
+    assert_seoul_time(data["publishedAt"], course.published_at)
+    assert_seoul_time(data["closedAt"], NOW)
+    section = data["sections"][0]
+    assert_seoul_time(section["videos"][0]["transcriptReviewedAt"], NOW)
+    assert_seoul_time(section["unitQuiz"]["reviewedAt"], NOW)
+
+
+def test_unpublish_time_is_seoul(client, operator_headers, courses):
+    excel = courses["excel"]
+
+    data = unpublish(client, operator_headers, excel.id, {"reason": "문제 있음"}).json()["data"]
+
+    assert_seoul_time(data["closedAt"], excel.closed_at)
+
+
+def test_republish_time_is_seoul(client, operator_headers, ready_course):
+    course = ready_course["course"]
+    hide(client, operator_headers, course)
+
+    data = republish(client, operator_headers, course.id).json()["data"]
+
+    assert_seoul_time(data["publishedAt"], course.published_at)
+
+
 # ---------- 권한 ----------
 
 PROTECTED_REQUESTS = [
